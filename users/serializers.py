@@ -4,8 +4,6 @@ from .models import Role, Page, RolePermission, UserPermission
 
 User = get_user_model()
 
-User = get_user_model()
-
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
     role = serializers.PrimaryKeyRelatedField(
@@ -17,7 +15,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'phone_number', 'is_active', 'password', 'role']
 
     def create(self, validated_data):
-        role = validated_data.pop('role', None)  # Extract role if provided
+        role = validated_data.pop('role', None)
         user = User.objects.create_user(
             username=validated_data['username'],
             email=validated_data.get('email', ''),
@@ -26,20 +24,19 @@ class UserSerializer(serializers.ModelSerializer):
             password=validated_data['password']
         )
         if role:
-            user.role = role  # Assign role if provided
+            user.role = role
             user.save()
         return user
-
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role
-        fields = ['id', 'name']
+        fields = ['id', 'name', 'name_ar']
 
 class PageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Page
-        fields = ['id', 'name', 'url']
+        fields = ['id', 'name', 'name_ar', 'url']
 
 class RolePermissionSerializer(serializers.ModelSerializer):
     class Meta:

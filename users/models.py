@@ -6,7 +6,8 @@ class CustomUser(AbstractUser):
     phone_number = models.CharField(max_length=15, unique=True, null=True, blank=True, verbose_name=_("Phone Number"))
     is_active = models.BooleanField(default=True, verbose_name=_("Active Status"))
     role = models.ForeignKey('Role', on_delete=models.SET_NULL, null=True, blank=True, verbose_name=_("Role"))
-
+    last_login = models.DateTimeField(auto_now=True, null=True, blank=True)
+    
     groups = models.ManyToManyField(
         "auth.Group",
         related_name="customuser_groups",

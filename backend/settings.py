@@ -47,7 +47,9 @@ INSTALLED_APPS = [
     'users',
     'inventory',
     'pos',
+    "rest_framework_simplejwt.token_blacklist",
 ]
+
 
 
 MIDDLEWARE = [
@@ -150,11 +152,19 @@ REST_FRAMEWORK = {
     ),
 }
 
+CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security
 CORS_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "http://127.0.0.1:8000",
+    "http://localhost:3000",  # ✅ Next.js Frontend
+    "http://127.0.0.1:3000",  # ✅ Alternative Localhost
 ]
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
 
 
 AUTH_USER_MODEL = 'users.CustomUser'
@@ -182,3 +192,5 @@ LANGUAGES = [
 LOCALE_PATHS = [
     BASE_DIR / 'locale',
 ]
+
+SIMPLE_JWT["BLACKLIST_AFTER_ROTATION"] = True

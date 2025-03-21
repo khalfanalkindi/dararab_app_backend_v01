@@ -5,28 +5,38 @@ from .models import Role, Page, RolePermission, UserPermission
 User = get_user_model()
 
 class UserSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=True)
-    role = serializers.PrimaryKeyRelatedField(
-        queryset=Role.objects.all(), required=False, allow_null=True
-    )
+    password = serializers.CharField(write_only=True, required=False)
+    role = serializers.PrimaryKeyRelatedField(queryset=Role.objects.all(), required=False, allow_null=True)
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'phone_number', 'is_active', 'password', 'role']
+        fields = ['id', 'username', 'email', 'phone_number', 'is_active', 'password', 'role', 'first_name', 'last_name']
 
     def create(self, validated_data):
+        password = validated_data.pop('password', None)
         role = validated_data.pop('role', None)
-        user = User.objects.create_user(
-            username=validated_data['username'],
-            email=validated_data.get('email', ''),
-            phone_number=validated_data.get('phone_number', ''),
-            is_active=validated_data.get('is_active', True),
-            password=validated_data['password']
-        )
+        user = User.objects.create_user(**validated_data)
+        
+        if password:
+            user.set_password(password)
+            user.save()
         if role:
             user.role = role
             user.save()
         return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        if password:
+            instance.set_password(password)
+        
+        instance.save()
+        return instance
+
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:

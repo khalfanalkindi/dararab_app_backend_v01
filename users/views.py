@@ -135,12 +135,18 @@ class RolePermissionListCreateView(generics.ListCreateAPIView):
     serializer_class = RolePermissionSerializer
     permission_classes = [IsAuthenticated]
 
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
 
 ### ✅ Update Role-Based Permission
 class RolePermissionUpdateView(generics.UpdateAPIView):
     queryset = RolePermission.objects.all()
     serializer_class = RolePermissionSerializer
     permission_classes = [IsAuthenticated]
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
 
 
 ### ✅ Delete Role-Based Permission (Handles Foreign Key Constraint)
@@ -170,12 +176,18 @@ class UserPermissionListCreateView(generics.ListCreateAPIView):
     serializer_class = UserPermissionSerializer
     permission_classes = [IsAuthenticated]
 
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
 
 ### ✅ Update User-Specific Permission
 class UserPermissionUpdateView(generics.UpdateAPIView):
     queryset = UserPermission.objects.all()
     serializer_class = UserPermissionSerializer
     permission_classes = [IsAuthenticated]
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
 
 
 ### ✅ Delete User-Specific Permission (Handles Foreign Key Constraint)

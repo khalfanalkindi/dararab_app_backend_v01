@@ -51,9 +51,12 @@ class PageSerializer(serializers.ModelSerializer):
 class RolePermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = RolePermission
-        fields = ['id', 'role', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete']
+        fields = ['id', 'role', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at', 'created_by', 'updated_by']
+
 
 class UserPermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserPermission
-        fields = ['id', 'user', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete']
+        fields = ['id', 'user', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at', 'created_by', 'updated_by']

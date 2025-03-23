@@ -57,12 +57,18 @@ class RolePermission(models.Model):
     can_edit = models.BooleanField(default=False, verbose_name=_("Edit Permission"))
     can_delete = models.BooleanField(default=False, verbose_name=_("Delete Permission"))
 
+    created_by = models.ForeignKey('CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='role_permissions_created')
+    updated_by = models.ForeignKey('CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='role_permissions_updated')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
     class Meta:
         unique_together = ('role', 'page')
         db_table = "role_permission"
 
     def __str__(self):
         return f"{self.role.name} - {self.page.name}"
+
 
 class UserPermission(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, verbose_name=_("User"))
@@ -72,9 +78,15 @@ class UserPermission(models.Model):
     can_edit = models.BooleanField(default=False, verbose_name=_("Edit Permission"))
     can_delete = models.BooleanField(default=False, verbose_name=_("Delete Permission"))
 
+    created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='user_permissions_created')
+    updated_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='user_permissions_updated')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
     class Meta:
         unique_together = ('user', 'page')
         db_table = "user_permission"
 
     def __str__(self):
         return f"{self.user.username} - {self.page.name}"
+

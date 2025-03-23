@@ -24,13 +24,19 @@ class PageAdmin(admin.ModelAdmin):
 # ✅ Role Permissions
 @admin.register(RolePermission)
 class RolePermissionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'role', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete')
+    list_display = (
+        'id', 'role', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete',
+        'created_by', 'updated_by', 'created_at', 'updated_at'
+    )
     list_filter = ('role', 'page')
 
 # ✅ User Permissions
 @admin.register(UserPermission)
 class UserPermissionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete')
+    list_display = (
+        'id', 'user', 'page', 'can_view', 'can_add', 'can_edit', 'can_delete',
+        'created_by', 'updated_by', 'created_at', 'updated_at'
+    )
     list_filter = ('user', 'page')
 
 

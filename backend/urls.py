@@ -8,6 +8,10 @@ def api_root(request):
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('users.urls')),  # ✅ Include all user management APIs
-    path('', api_root, name='api-root'),  # ✅ Root endpoint
+    path('api/', include('users.urls')),  #Include all user management APIs
+    path('api/inventory/', include('inventory.urls')),
+    path('api/common/', include('common.urls')),
+    path('', api_root, name='api-root'),
+
+
 ]

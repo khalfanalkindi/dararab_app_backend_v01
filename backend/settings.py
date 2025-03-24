@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'users',
     'inventory',
     'pos',
+    'common',
     "rest_framework_simplejwt.token_blacklist",
 ]
 

@@ -12,6 +12,7 @@ urlpatterns = [
     path('api/inventory/', include('inventory.urls')),
     path('api/common/', include('common.urls')),
     path('', api_root, name='api-root'),
+    path('api/sales/', include('sales.urls')),
 
 
 ]

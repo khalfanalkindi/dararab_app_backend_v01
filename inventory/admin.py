@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    Author, PrintTask, Translator, RightsOwner, Reviewer,
+    Author, PrintTask, Stakeholder, Translator, RightsOwner, Reviewer,
     Project, Contract, Product, Warehouse, Inventory, Transfer
 )
 from common.models import ListItem
@@ -72,22 +72,26 @@ class ProjectAdmin(admin.ModelAdmin):
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if db_field.name == "status":
-            kwargs["queryset"] = ListItem.objects.filter(list_type__code="project_status")
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="projects_status")
         elif db_field.name == "progress_status":
-            kwargs["queryset"] = ListItem.objects.filter(list_type__code="project_progress")
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="progress_status")
         elif db_field.name == "type":
-            kwargs["queryset"] = ListItem.objects.filter(list_type__code="project_type")
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="projects_type")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 # ========== Contract ==========
+
 @admin.register(Contract)
 class ContractAdmin(admin.ModelAdmin):
-    list_display = ('id', 'project', 'contract_type', 'author', 'translator', 'rights_owner', 'reviewer', 'commission_percent', 'fixed_amount')
-    list_filter = ('contract_type',)
+    list_display = ('title', 'project', 'contract_type', 'status', 'start_date', 'end_date')
+    list_filter = ('status', 'contract_type')
+    search_fields = ('title', 'project__title_ar', 'project__title_original')
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if db_field.name == "contract_type":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="contract_type")
+        elif db_field.name == "status":
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="contract_status")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 # ========== PrintTask ==========
@@ -102,3 +106,10 @@ class PrintTaskAdmin(admin.ModelAdmin):
         elif db_field.name == "status":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="print_task_status")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+# ========== Stakeholder ==========
+@admin.register(Stakeholder)
+class StakeholderAdmin(admin.ModelAdmin):
+    list_display = ('name', 'contact_person', 'email', 'phone')
+    search_fields = ('name', 'contact_person', 'email')
+    list_filter = ('created_at',)

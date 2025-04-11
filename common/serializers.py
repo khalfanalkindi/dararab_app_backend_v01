@@ -4,9 +4,9 @@ from .models import ListType, ListItem
 class ListTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = ListType
-        fields = '__all__'
+        exclude = ('created_by', 'updated_by')  # exclude instead of __all__
 
 class ListItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = ListItem
-        fields = '__all__'
+        exclude = ('created_by', 'updated_by')  # same here

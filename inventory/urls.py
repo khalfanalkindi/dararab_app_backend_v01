@@ -48,10 +48,15 @@ urlpatterns = [
     path("reviewers/<int:pk>/", views.ReviewerUpdateView.as_view(), name="reviewer-update"),
     path("reviewers/<int:pk>/delete/", views.ReviewerDeleteView.as_view(), name="reviewer-delete"),
 
+     ### ===== Stakeholder =====
+    path('stakeholders/', views.StakeholderListCreateView.as_view(), name='stakeholder-list-create'),
+    path('stakeholders/<int:pk>/', views.StakeholderUpdateView.as_view(), name='stakeholder-update'),
+    path('stakeholders/<int:pk>/delete/', views.StakeholderDeleteView.as_view(), name='stakeholder-delete'),
+
     ### ===== Contracts =====
-    path("contracts/", views.ContractListCreateView.as_view(), name="contract-list-create"),
-    path("contracts/<int:pk>/", views.ContractUpdateView.as_view(), name="contract-update"),
-    path("contracts/<int:pk>/delete/", views.ContractDeleteView.as_view(), name="contract-delete"),
+    path('contracts/', views.ContractListCreateView.as_view(), name='contract-list-create'),
+    path('contracts/<int:pk>/', views.ContractUpdateView.as_view(), name='contract-update'),
+    path('contracts/<int:pk>/delete/', views.ContractDeleteView.as_view(), name='contract-delete'),
 
     ### ===== Print Tasks =====
     path("print-tasks/", views.PrintTaskListCreateView.as_view(), name="print-task-list-create"),

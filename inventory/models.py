@@ -1,6 +1,12 @@
 from django.db import models
 from django.conf import settings
 from common.models import ListItem
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
+
+
+User = get_user_model()
 
 # 🔁 Mixin for audit fields
 class AuditModel(models.Model):
@@ -49,6 +55,17 @@ class RightsOwner(AuditModel):
 class Reviewer(AuditModel):
     name = models.CharField(max_length=255)
     bio = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.name
+
+class Stakeholder(AuditModel):
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    contact_person = models.CharField(max_length=255, blank=True)
+    email = models.EmailField(blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
 
     def __str__(self):
         return self.name
@@ -118,26 +135,32 @@ class Transfer(AuditModel):
     def __str__(self):
         return f"Transfer {self.quantity} of {self.product} from {self.from_warehouse} to {self.to_warehouse}"
 
-
-
-
-
 # Contract
+
 class Contract(AuditModel):
-    project = models.ForeignKey(Project, on_delete=models.CASCADE)
-    contract_type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='contract_type')  # مثل: عقد تأليف، ترجمة، حقوق،  revision, etc.
-    author = models.ForeignKey(Author, on_delete=models.SET_NULL, null=True, blank=True)
-    translator = models.ForeignKey(Translator, on_delete=models.SET_NULL, null=True, blank=True)
-    rights_owner = models.ForeignKey(RightsOwner, on_delete=models.SET_NULL, null=True, blank=True)
-    reviewer = models.ForeignKey(Reviewer, on_delete=models.SET_NULL, null=True, blank=True)
+    title = models.CharField(max_length=255, null=True, blank=True)
+    project = models.ForeignKey('Project', on_delete=models.CASCADE)
+    contract_type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='contract_type')
+    
+    # Generic Foreign Key for contracted party
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    contracted_party = GenericForeignKey('content_type', 'object_id')
+    
     commission_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     fixed_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     free_copies = models.IntegerField(null=True, blank=True)
-    contract_duration = models.IntegerField(help_text="the contract by months", null=True, blank=True)
+    contract_duration = models.IntegerField(help_text="The contract in months", null=True, blank=True)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    signed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='signed_contracts')
+    status = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='contract_status')
     payment_schedule = models.TextField(blank=True)
+    notes = models.TextField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.project} - {self.contract_type}"
+        return f"{self.title or self.project} - {self.contract_type}"
+
     
 class PrintTask(AuditModel):
     product = models.ForeignKey('Product', on_delete=models.CASCADE)

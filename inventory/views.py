@@ -5,17 +5,16 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .models import (
-    Project, Product, Warehouse, Inventory, Transfer,
+    Project, Product, Stakeholder, Warehouse, Inventory, Transfer,
     Author, Translator, RightsOwner, Reviewer,
     Contract, PrintTask
 )
 from .serializers import (
-    ProjectSerializer, ProductSerializer, WarehouseSerializer,
+    ProjectSerializer, ProductSerializer, StakeholderSerializer, WarehouseSerializer,
     InventorySerializer, TransferSerializer,
     AuthorSerializer, TranslatorSerializer, RightsOwnerSerializer,
     ReviewerSerializer, ContractSerializer, PrintTaskSerializer
 )
-
 ### ==== Shared Delete View ====
 class BaseDeleteView(generics.DestroyAPIView):
     permission_classes = [IsAuthenticated]
@@ -156,7 +155,6 @@ class AuthorDeleteView(BaseDeleteView):
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
 
-# نفس الشيء للمترجم
 class TranslatorListCreateView(generics.ListCreateAPIView):
     queryset = Translator.objects.all()
     serializer_class = TranslatorSerializer
@@ -177,7 +175,6 @@ class TranslatorDeleteView(BaseDeleteView):
     queryset = Translator.objects.all()
     serializer_class = TranslatorSerializer
 
-# صاحب الحقوق
 class RightsOwnerListCreateView(generics.ListCreateAPIView):
     queryset = RightsOwner.objects.all()
     serializer_class = RightsOwnerSerializer
@@ -198,7 +195,6 @@ class RightsOwnerDeleteView(BaseDeleteView):
     queryset = RightsOwner.objects.all()
     serializer_class = RightsOwnerSerializer
 
-# المراجع
 class ReviewerListCreateView(generics.ListCreateAPIView):
     queryset = Reviewer.objects.all()
     serializer_class = ReviewerSerializer
@@ -219,7 +215,30 @@ class ReviewerDeleteView(BaseDeleteView):
     queryset = Reviewer.objects.all()
     serializer_class = ReviewerSerializer
 
+class StakeholderListCreateView(generics.ListCreateAPIView):
+    queryset = Stakeholder.objects.all()
+    serializer_class = StakeholderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
+class StakeholderUpdateView(generics.UpdateAPIView):
+    queryset = Stakeholder.objects.all()
+    serializer_class = StakeholderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
+
+class StakeholderDeleteView(generics.DestroyAPIView):
+    queryset = Stakeholder.objects.all()
+    serializer_class = StakeholderSerializer
+    permission_classes = [IsAuthenticated]
+
+
 # ============================== Contract ==============================
+
 class ContractListCreateView(generics.ListCreateAPIView):
     queryset = Contract.objects.all()
     serializer_class = ContractSerializer
@@ -236,9 +255,11 @@ class ContractUpdateView(generics.UpdateAPIView):
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
 
-class ContractDeleteView(BaseDeleteView):
+class ContractDeleteView(generics.DestroyAPIView):
     queryset = Contract.objects.all()
     serializer_class = ContractSerializer
+    permission_classes = [IsAuthenticated]
+
 
 # ============================== PrintTask ==============================
 class PrintTaskListCreateView(generics.ListCreateAPIView):

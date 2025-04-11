@@ -38,6 +38,17 @@ class UserSerializer(serializers.ModelSerializer):
         return instance
 
 
+class UserBasicSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'full_name', 'email']
+
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip()
+
+
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role

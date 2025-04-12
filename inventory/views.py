@@ -185,15 +185,15 @@ class InventoryUpdateByProductView(generics.UpdateAPIView):
     def get_object(self):
         product_id = self.kwargs.get('product_id')
         warehouse_id = self.request.data.get('warehouse_id')
-        
+
         if not warehouse_id:
             raise serializers.ValidationError({"warehouse_id": "This field is required."})
-            
+
         try:
             return Inventory.objects.get(product_id=product_id, warehouse_id=warehouse_id)
         except Inventory.DoesNotExist:
             raise Http404("No inventory found for this product and warehouse combination.")
-    
+        
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
 

@@ -22,6 +22,8 @@ urlpatterns = [
     path("inventory/", views.InventoryListCreateView.as_view(), name="inventory-list-create"),
     path("inventory/<int:pk>/", views.InventoryUpdateView.as_view(), name="inventory-update"),
     path("inventory/<int:pk>/delete/", views.InventoryDeleteView.as_view(), name="inventory-delete"),
+    path("inventory/product/<int:product_id>/update/", views.InventoryUpdateByProductView.as_view(), name="inventory-update-by-product"),
+    path("inventory/product/<int:product_id>/delete/", views.InventoryDeleteByProductView.as_view(), name="inventory-delete-by-product"),
 
     ### ===== Transfer =====
     path("transfers/", views.TransferListCreateView.as_view(), name="transfer-list-create"),

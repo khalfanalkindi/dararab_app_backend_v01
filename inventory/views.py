@@ -3,6 +3,8 @@ from rest_framework.permissions import IsAuthenticated
 from django.db.models import ProtectedError
 from rest_framework.response import Response
 from rest_framework import status
+from django.http import Http404
+from rest_framework import serializers
 
 from .models import (
     Project, Product, Stakeholder, Warehouse, Inventory, Transfer,
@@ -56,6 +58,11 @@ class ProductListCreateView(generics.ListCreateAPIView):
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
@@ -63,6 +70,11 @@ class ProductUpdateView(generics.UpdateAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
@@ -98,8 +110,60 @@ class InventoryListCreateView(generics.ListCreateAPIView):
     serializer_class = InventorySerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        queryset = Inventory.objects.all()
+        product_id = self.request.query_params.get('product_id', None)
+        if product_id is not None:
+            queryset = queryset.filter(product_id=product_id)
+        return queryset
+
+    def create(self, request, *args, **kwargs):
+        # Handle frontend data format
+        data = request.data.copy()
+        
+        # Check if data is in the format {product: 1, warehouse: 1, quantity: 54}
+        if 'product' in data and isinstance(data['product'], (int, str)):
+            data['product_id'] = data.pop('product')
+            
+        if 'warehouse' in data and isinstance(data['warehouse'], (int, str)):
+            data['warehouse_id'] = data.pop('warehouse')
+        
+        # Check if inventory record already exists for this product and warehouse
+        product_id = data.get('product_id')
+        warehouse_id = data.get('warehouse_id')
+        
+        if product_id and warehouse_id:
+            try:
+                # Try to get existing inventory record
+                inventory = Inventory.objects.get(product_id=product_id, warehouse_id=warehouse_id)
+                
+                # Update the existing record instead of creating a new one
+                serializer = self.get_serializer(inventory, data=data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                self.perform_update(serializer)
+                
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            except Inventory.DoesNotExist:
+                # If no existing record, create a new one
+                serializer = self.get_serializer(data=data)
+                serializer.is_valid(raise_exception=True)
+                self.perform_create(serializer)
+                headers = self.get_success_headers(serializer.data)
+                return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+            except Exception as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            serializer = self.get_serializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
+        
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
 
 class InventoryUpdateView(generics.UpdateAPIView):
     queryset = Inventory.objects.all()
@@ -112,6 +176,52 @@ class InventoryUpdateView(generics.UpdateAPIView):
 class InventoryDeleteView(BaseDeleteView):
     queryset = Inventory.objects.all()
     serializer_class = InventorySerializer
+
+# New views for product-specific inventory operations
+class InventoryUpdateByProductView(generics.UpdateAPIView):
+    serializer_class = InventorySerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_object(self):
+        product_id = self.kwargs.get('product_id')
+        warehouse_id = self.request.data.get('warehouse_id')
+        
+        if not warehouse_id:
+            raise serializers.ValidationError({"warehouse_id": "This field is required."})
+            
+        try:
+            return Inventory.objects.get(product_id=product_id, warehouse_id=warehouse_id)
+        except Inventory.DoesNotExist:
+            raise Http404("No inventory found for this product and warehouse combination.")
+    
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
+
+class InventoryDeleteByProductView(generics.DestroyAPIView):
+    serializer_class = InventorySerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_object(self):
+        product_id = self.kwargs.get('product_id')
+        warehouse_id = self.request.query_params.get('warehouse_id')
+        
+        if not warehouse_id:
+            raise serializers.ValidationError({"warehouse_id": "This field is required."})
+            
+        try:
+            return Inventory.objects.get(product_id=product_id, warehouse_id=warehouse_id)
+        except Inventory.DoesNotExist:
+            raise Http404("No inventory found for this product and warehouse combination.")
+    
+    def delete(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+            instance.delete()
+            return Response({"message": "Deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+        except ProtectedError:
+            return Response({"error": "Cannot delete due to related data."}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 # ============================== Transfer ==============================
 class TransferListCreateView(generics.ListCreateAPIView):

@@ -17,7 +17,9 @@ class ProjectBasicSerializer(serializers.ModelSerializer):
 class ProductSerializer(serializers.ModelSerializer):
     # ✅ Nested read-only representations
     project = ProjectBasicSerializer(read_only=True)
+    status = ListItemSerializer(read_only=True)
     genre = ListItemSerializer(read_only=True)
+    cover_design_url = serializers.SerializerMethodField()
 
     # ✅ Writable ID fields for dropdowns
     project_id = serializers.PrimaryKeyRelatedField(
@@ -26,18 +28,29 @@ class ProductSerializer(serializers.ModelSerializer):
     genre_id = serializers.PrimaryKeyRelatedField(
         queryset=ListItem.objects.all(), source='genre', write_only=True, required=True
     )
+    status_id = serializers.PrimaryKeyRelatedField(
+        queryset=ListItem.objects.all(), source='status', write_only=True, required=True
+    )
+
+    def get_cover_design_url(self, obj):
+        if obj.cover_design:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.cover_design.url)
+            return obj.cover_design.url
+        return None
 
     class Meta:
         model = Product
         fields = [
-            'id', 'isbn', 'internal_layout', 'cover_design', 'print_cost',
-            'published_at', 'price', 'status', 'is_direct_product',
+            'id', 'isbn', 'title_ar', 'title_en', 'cover_design', 'cover_design_url', 'print_cost',
+            'published_at', 'price', 'is_direct_product',
 
             # Nested output
-            'project', 'genre',
+            'project', 'genre', 'status',
 
             # Writable input
-            'project_id', 'genre_id',
+            'project_id', 'genre_id', 'status_id',
 
             'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
@@ -50,10 +63,43 @@ class WarehouseSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
 
 class InventorySerializer(serializers.ModelSerializer):
+    # Nested read-only representations
+    product = ProductSerializer(read_only=True)
+    warehouse = WarehouseSerializer(read_only=True)
+    
+    # Writable ID fields for dropdowns
+    product_id = serializers.PrimaryKeyRelatedField(
+        queryset=Product.objects.all(), source='product', write_only=True, required=False
+    )
+    warehouse_id = serializers.PrimaryKeyRelatedField(
+        queryset=Warehouse.objects.all(), source='warehouse', write_only=True, required=False
+    )
+    
     class Meta:
         model = Inventory
-        fields = '__all__'
+        fields = [
+            'id', 'quantity',
+            
+            # Nested output
+            'product', 'warehouse',
+            
+            # Writable input
+            'product_id', 'warehouse_id',
+            
+            'created_by', 'updated_by', 'created_at', 'updated_at',
+        ]
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+        
+    def validate(self, data):
+        # Check if we have either product_id or product
+        if 'product' not in data and 'product_id' not in self.initial_data:
+            raise serializers.ValidationError({"product": "Product is required"})
+            
+        # Check if we have either warehouse_id or warehouse
+        if 'warehouse' not in data and 'warehouse_id' not in self.initial_data:
+            raise serializers.ValidationError({"warehouse": "Warehouse is required"})
+            
+        return data
 
 class TransferSerializer(serializers.ModelSerializer):
     class Meta:

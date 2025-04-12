@@ -8,15 +8,29 @@ from common.models import ListItem
 # ========== Product ==========
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('id', 'isbn', 'price', 'published_at', 'status', 'created_by')
-    search_fields = ('isbn',)
+    list_display = ('id', 'isbn', 'title_ar', 'title_en', 'price', 'published_at', 'status', 'created_by')
+    search_fields = ('isbn', 'title_ar', 'title_en')
     list_filter = ('status', 'is_direct_product')
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('isbn', 'title_ar', 'title_en', 'project')
+        }),
+        ('Cover & Design', {
+            'fields': ('cover_design',)
+        }),
+        ('Pricing & Details', {
+            'fields': ('print_cost', 'price', 'published_at', 'is_direct_product')
+        }),
+        ('Classification', {
+            'fields': ('genre', 'status')
+        }),
+    )
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if db_field.name == "status":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="product_status")
         elif db_field.name == "genre":
-            kwargs["queryset"] = ListItem.objects.filter(list_type__code="genre")  # لو عندك genre
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="genre") 
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 # ========== Warehouse ==========

@@ -92,17 +92,18 @@ class Project(AuditModel):
 class Product(AuditModel):
     project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True)
     isbn = models.CharField(max_length=100)
-    internal_layout = models.TextField()
-    cover_design = models.TextField()
+    title_ar = models.CharField(max_length=255, verbose_name="Book Title (Arabic)")
+    title_en = models.CharField(max_length=255, verbose_name="Book Title (English)")
+    cover_design = models.ImageField(upload_to='book_covers/', null=True, blank=True)
     print_cost = models.DecimalField(max_digits=10, decimal_places=2)
     published_at = models.DateField()
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    status = models.CharField(max_length=50)
-    genre = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='product_genre')
+    genre = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='genre')
+    status = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='product_status')
     is_direct_product = models.BooleanField(default=False)
 
     def __str__(self):
-        return self.isbn
+        return self.title_ar or self.isbn
 
 # 🏬 Warehouse
 class Warehouse(AuditModel):
@@ -119,6 +120,10 @@ class Inventory(AuditModel):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE)
     quantity = models.IntegerField()
+
+    class Meta:
+        unique_together = ('product', 'warehouse')
+        verbose_name_plural = "Inventories"
 
     def __str__(self):
         return f"{self.product} @ {self.warehouse}"

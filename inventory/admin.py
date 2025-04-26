@@ -1,28 +1,44 @@
 from django.contrib import admin
 from .models import (
-    Author, PrintTask, Stakeholder, Translator, RightsOwner, Reviewer,
+    Author, PrintRun, PrintTask, Stakeholder, Translator, RightsOwner, Reviewer,
     Project, Contract, Product, Warehouse, Inventory, Transfer
 )
 from common.models import ListItem
 
-# ========== Product ==========
+
+# ========== Product & PrintRun ==========  
+class PrintRunInline(admin.TabularInline):
+    model = PrintRun
+    extra = 1  # how many blank editions to show by default
+
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('id', 'isbn', 'title_ar', 'title_en', 'price', 'published_at', 'status', 'created_by')
+    inlines = [PrintRunInline]
+
+    list_display = (
+        'id', 'isbn', 'title_ar', 'title_en',
+        'project', 'author', 'translator', 'rights_owner', 'reviewer',
+        'status', 'is_direct_product', 'created_by'
+    )
     search_fields = ('isbn', 'title_ar', 'title_en')
-    list_filter = ('status', 'is_direct_product')
+    list_filter   = ('status', 'is_direct_product')
+
     fieldsets = (
         ('Basic Information', {
-            'fields': ('isbn', 'title_ar', 'title_en', 'project')
+            'fields': ['isbn', 'title_ar', 'title_en', 'project'],
         }),
         ('Cover & Design', {
-            'fields': ('cover_design',)
+            'fields': ['cover_design'],
         }),
-        ('Pricing & Details', {
-            'fields': ('print_cost', 'price', 'published_at', 'is_direct_product')
+        ('People & Stakeholders', {
+            'fields': ['author', 'translator', 'rights_owner', 'reviewer'],
+        }),
+        # removed published_at here
+        ('General Details', {
+            'fields': ['is_direct_product'],
         }),
         ('Classification', {
-            'fields': ('genre', 'status')
+            'fields': ['genre', 'status'],
         }),
     )
 
@@ -30,9 +46,15 @@ class ProductAdmin(admin.ModelAdmin):
         if db_field.name == "status":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="product_status")
         elif db_field.name == "genre":
-            kwargs["queryset"] = ListItem.objects.filter(list_type__code="genre") 
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="genre")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
+
+@admin.register(PrintRun)
+class PrintRunAdmin(admin.ModelAdmin):
+    list_display  = ('id', 'product', 'edition_number', 'print_cost', 'price', 'status')
+    search_fields = ('product__title_en', 'product__isbn')
+    list_filter   = ('status',)
 # ========== Warehouse ==========
 @admin.register(Warehouse)
 class WarehouseAdmin(admin.ModelAdmin):

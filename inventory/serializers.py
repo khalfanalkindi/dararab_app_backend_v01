@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from users.serializers import User, UserBasicSerializer
-from .models import (PrintTask, Product, Stakeholder, Warehouse, Inventory, Transfer,
+from .models import (PrintRun, PrintTask, Product, Stakeholder, Warehouse, Inventory, Transfer,
     Author, Translator, RightsOwner, Reviewer,
     Project, Contract
 )
@@ -9,52 +9,7 @@ from common.models import ListItem
 from common.serializers import ListItemSerializer
 from django.contrib.contenttypes.models import ContentType
 
-class ProjectBasicSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Project
-        fields = ['id', 'title_ar', 'title_original']
 
-class ProductSerializer(serializers.ModelSerializer):
-    # ✅ Nested read-only representations
-    project = ProjectBasicSerializer(read_only=True)
-    status = ListItemSerializer(read_only=True)
-    genre = ListItemSerializer(read_only=True)
-    cover_design_url = serializers.SerializerMethodField()
-
-    # ✅ Writable ID fields for dropdowns
-    project_id = serializers.PrimaryKeyRelatedField(
-        queryset=Project.objects.all(), source='project', write_only=True, required=False
-    )
-    genre_id = serializers.PrimaryKeyRelatedField(
-        queryset=ListItem.objects.all(), source='genre', write_only=True, required=True
-    )
-    status_id = serializers.PrimaryKeyRelatedField(
-        queryset=ListItem.objects.all(), source='status', write_only=True, required=True
-    )
-
-    def get_cover_design_url(self, obj):
-        if obj.cover_design:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.cover_design.url)
-            return obj.cover_design.url
-        return None
-
-    class Meta:
-        model = Product
-        fields = [
-            'id', 'isbn', 'title_ar', 'title_en', 'cover_design', 'cover_design_url', 'print_cost',
-            'published_at', 'price', 'is_direct_product',
-
-            # Nested output
-            'project', 'genre', 'status',
-
-            # Writable input
-            'project_id', 'genre_id', 'status_id',
-
-            'created_by', 'updated_by', 'created_at', 'updated_at',
-        ]
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
 
 class WarehouseSerializer(serializers.ModelSerializer):
     class Meta:
@@ -62,6 +17,142 @@ class WarehouseSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
 
+
+
+class TransferSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Transfer
+        fields = '__all__'
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+
+class AuthorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Author
+        fields = '__all__'
+
+class TranslatorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Translator
+        fields = '__all__'
+
+class RightsOwnerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RightsOwner
+        fields = '__all__'
+
+class ReviewerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Reviewer
+        fields = '__all__'
+
+class StakeholderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Stakeholder
+        fields = '__all__'
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+class ProjectBasicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Project
+        fields = ['id', 'title_ar', 'title_original']
+
+class ProductSerializer(serializers.ModelSerializer):
+    # ✅ Read-only nested objects
+    project= ProjectBasicSerializer(read_only=True)
+    author= AuthorSerializer(read_only=True)
+    translator= TranslatorSerializer(read_only=True)
+    rights_owner= RightsOwnerSerializer(read_only=True)
+    reviewer= ReviewerSerializer(read_only=True)
+    genre= ListItemSerializer(read_only=True)
+    status= ListItemSerializer(read_only=True)
+
+    # ✅ Writable IDs for creation and update
+    project_id= serializers.PrimaryKeyRelatedField(
+                          queryset=Product.objects.all(),  # or Project.objects
+                          source='project',
+                          write_only=True,
+                          required=False)
+    author_id= serializers.PrimaryKeyRelatedField(
+                          queryset=Author.objects.all(),
+                          source='author',
+                          write_only=True,
+                          required=False)
+    translator_id= serializers.PrimaryKeyRelatedField(
+                          queryset=Translator.objects.all(),
+                          source='translator',
+                          write_only=True,
+                          required=False)
+    rights_owner_id= serializers.PrimaryKeyRelatedField(
+                          queryset=RightsOwner.objects.all(),
+                          source='rights_owner',
+                          write_only=True,
+                          required=False)
+    reviewer_id= serializers.PrimaryKeyRelatedField(
+                          queryset=Reviewer.objects.all(),
+                          source='reviewer',
+                          write_only=True,
+                          required=False)
+    genre_id= serializers.PrimaryKeyRelatedField(
+                          queryset=ListItem.objects.all(),
+                          source='genre',
+                          write_only=True,
+                          required=True)
+    status_id= serializers.PrimaryKeyRelatedField(
+                          queryset=ListItem.objects.all(),
+                          source='status',
+                          write_only=True,
+                          required=True)
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "isbn",
+            "title_ar",
+            "title_en",
+            "cover_design",
+            
+
+            # Nested output
+            "project", "author", "translator", "rights_owner", "reviewer",
+            "genre", "status",
+
+            # Writable IDs
+            "project_id", "author_id", "translator_id", "rights_owner_id", "reviewer_id",
+            "genre_id", "status_id",
+
+            "is_direct_product",
+            "created_by",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_by", "updated_by", "created_at", "updated_at"]
+
+
+class PrintRunSerializer(serializers.ModelSerializer):
+    product= serializers.StringRelatedField(read_only=True)
+    product_id= serializers.PrimaryKeyRelatedField(
+                      queryset=Product.objects.all(),
+                      source='product',
+                      write_only=True)
+    status= ListItemSerializer(read_only=True)
+    status_id= serializers.PrimaryKeyRelatedField(
+                      queryset=ListItem.objects.all(),
+                      source='status',
+                      write_only=True
+                  )
+
+    class Meta:
+        model = PrintRun
+        fields = [
+          'id', 'product', 'product_id',
+          'edition_number', 'print_cost', 'price',
+          'status', 'status_id', 'notes','published_at', 
+          'created_by', 'updated_by', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
 class InventorySerializer(serializers.ModelSerializer):
     # Nested read-only representations
     product = ProductSerializer(read_only=True)
@@ -100,42 +191,7 @@ class InventorySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"warehouse": "Warehouse is required"})
             
         return data
-
-class TransferSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Transfer
-        fields = '__all__'
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
-
-
-class AuthorSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Author
-        fields = '__all__'
-
-class TranslatorSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Translator
-        fields = '__all__'
-
-class RightsOwnerSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RightsOwner
-        fields = '__all__'
-
-class ReviewerSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Reviewer
-        fields = '__all__'
-
-class StakeholderSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Stakeholder
-        fields = '__all__'
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
-
-
-
+    
 class ProjectSerializer(serializers.ModelSerializer):
     # ✅ Read-only nested objects
     author = AuthorSerializer(read_only=True)
@@ -380,4 +436,32 @@ class PrintTaskSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
 
+class ProductSummarySerializer(serializers.ModelSerializer):
+    genre_id      = serializers.IntegerField()    # new
+    status_id     = serializers.IntegerField()  # new
+    genre_name    = serializers.CharField(source='genre.display_name_en')
+    status_name   = serializers.CharField(source='status.display_name_en')
+    author_name     = serializers.CharField(source='author.name',    default=None)
+    translator_name = serializers.CharField(source='translator.name', default=None)
+    editions_count = serializers.IntegerField()
+    stock          = serializers.IntegerField()
+    latest_price   = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
+    latest_cost    = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
+    cover_design_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Product
+        fields = [
+            'id', 'title_ar', 'title_en', 'isbn',
+            'genre_id','status_id',
+            'genre_name', 'status_name',
+            'author_name', 'translator_name',
+            'editions_count', 'stock',
+            'latest_price', 'latest_cost', "cover_design_url"
+        ]
+    def get_cover_design_url(self, obj):
+        request = self.context.get("request")
+        if obj.cover_design and hasattr(obj.cover_design, "url"):
+            return request.build_absolute_uri(obj.cover_design.url)
+        return None
 

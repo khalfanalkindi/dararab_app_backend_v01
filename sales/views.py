@@ -6,7 +6,7 @@ from django.db.models import ProtectedError
 
 from .models import Customer, Invoice, InvoiceItem, Payment, Return
 from .serializers import (
-    CustomerSerializer, InvoiceSerializer, InvoiceItemSerializer,
+    CustomerSerializer, InvoiceSerializer, InvoiceItemSerializer, InvoiceSummarySerializer,
     PaymentSerializer, ReturnSerializer
 )
 
@@ -128,3 +128,23 @@ class ReturnUpdateView(generics.UpdateAPIView):
 class ReturnDeleteView(BaseDeleteView):
     queryset = Return.objects.all()
     serializer_class = ReturnSerializer
+
+class InvoiceSummaryView(generics.RetrieveAPIView):
+    queryset = Invoice.objects.all()
+    serializer_class = InvoiceSummarySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return super().get_queryset().select_related(
+            'customer',
+            'customer__type',
+            'warehouse',
+            'invoice_type',
+            'payment_method',
+            'created_by',
+            'updated_by'
+        ).prefetch_related(
+            'invoiceitem_set',
+            'invoiceitem_set__product',
+            'payment_set'
+        )

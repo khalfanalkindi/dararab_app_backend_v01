@@ -12,6 +12,17 @@ urlpatterns = [
     path("products/", views.ProductListCreateView.as_view(), name="product-list-create"),
     path("products/<int:pk>/", views.ProductUpdateView.as_view(), name="product-update"),
     path("products/<int:pk>/delete/", views.ProductDeleteView.as_view(), name="product-delete"),
+    path("products/<int:pk>/detail/",views.ProductRetrieveView.as_view(),name="product-retrieve"),
+
+    path('product-summary/', views.ProductSummaryView.as_view(), name='product-summary'),
+
+      ### ===== print Runs =====
+    path("print-runs/",views.PrintRunListCreateView.as_view(),   name="printrun-list-create"),
+    path("print-runs/<int:pk>/", views.PrintRunUpdateView.as_view(),       name="printrun-update"),
+    path("print-runs/<int:pk>/delete/", views.PrintRunDeleteView.as_view(), name="printrun-delete"),
+    path("products/<int:product_id>/print-runs/update/",views.PrintRunUpdateByProductEditionView.as_view(),name="printrun-update-by-product"),
+    path("products/<int:product_id>/print-runs/delete/",views.PrintRunDeleteByProductEditionView.as_view(),name="printrun-delete-by-product"),
+
 
     ### ===== Warehouse =====
     path("warehouses/", views.WarehouseListCreateView.as_view(), name="warehouse-list-create"),
@@ -64,4 +75,5 @@ urlpatterns = [
     path("print-tasks/", views.PrintTaskListCreateView.as_view(), name="print-task-list-create"),
     path("print-tasks/<int:pk>/", views.PrintTaskUpdateView.as_view(), name="print-task-update"),
     path("print-tasks/<int:pk>/delete/", views.PrintTaskDeleteView.as_view(), name="print-task-delete"),
+
 ]

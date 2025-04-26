@@ -156,6 +156,8 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+   'DEFAULT_PAGINATION_CLASS': 'inventory.pagination.StandardResultsSetPagination',
+    'PAGE_SIZE': 25,
 }
 
 CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security

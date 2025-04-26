@@ -90,20 +90,40 @@ class Project(AuditModel):
 
 # 📦 Product
 class Product(AuditModel):
-    project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True)
-    isbn = models.CharField(max_length=100)
-    title_ar = models.CharField(max_length=255, verbose_name="Book Title (Arabic)")
-    title_en = models.CharField(max_length=255, verbose_name="Book Title (English)")
-    cover_design = models.ImageField(upload_to='book_covers/', null=True, blank=True)
-    print_cost = models.DecimalField(max_digits=10, decimal_places=2)
-    published_at = models.DateField()
-    price = models.DecimalField(max_digits=10, decimal_places=2)
-    genre = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='genre')
-    status = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='product_status')
+    project= models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True)
+    isbn= models.CharField(max_length=100)
+    title_ar= models.CharField(max_length=255, verbose_name="Book Title (Arabic)")
+    title_en= models.CharField(max_length=255, verbose_name="Book Title (English)")
+    cover_design= models.ImageField(upload_to='book_covers/', null=True, blank=True)
+    genre= models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='genre')
+    status= models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='product_status')
+    author= models.ForeignKey(Author,      on_delete=models.SET_NULL, null=True, blank=True)
+    translator= models.ForeignKey(Translator, on_delete=models.SET_NULL, null=True, blank=True)
+    rights_owner= models.ForeignKey(RightsOwner,on_delete=models.SET_NULL, null=True, blank=True)
+    reviewer= models.ForeignKey(Reviewer,   on_delete=models.SET_NULL, null=True, blank=True)
+
     is_direct_product = models.BooleanField(default=False)
 
     def __str__(self):
         return self.title_ar or self.isbn
+# PrintRun
+class PrintRun(AuditModel):
+    product= models.ForeignKey(Product, on_delete=models.CASCADE, related_name='print_runs', db_index=True)
+    edition_number= models.PositiveIntegerField(verbose_name="Edition Number")
+    print_cost= models.DecimalField(max_digits=10, decimal_places=2)
+    price= models.DecimalField(max_digits=10, decimal_places=2)
+    status= models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='printrun_status')
+    published_at= models.DateField()
+    notes= models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['product', 'edition_number']
+        indexes = [
+            models.Index(fields=['product','edition_number']),  # composite index
+        ]
+
+    def __str__(self):
+        return f"{self.product} — Edition {self.edition_number}"
 
 # 🏬 Warehouse
 class Warehouse(AuditModel):
@@ -117,13 +137,16 @@ class Warehouse(AuditModel):
 
 # 📊 Inventory
 class Inventory(AuditModel):
-    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, db_index=True,)
     warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE)
     quantity = models.IntegerField()
 
     class Meta:
         unique_together = ('product', 'warehouse')
         verbose_name_plural = "Inventories"
+        indexes = [
+            models.Index(fields=['product']),   # explicit index
+        ]
 
     def __str__(self):
         return f"{self.product} @ {self.warehouse}"

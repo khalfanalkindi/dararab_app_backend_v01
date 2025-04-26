@@ -27,4 +27,7 @@ urlpatterns = [
     path("returns/", views.ReturnListCreateView.as_view(), name="return-list-create"),
     path("returns/<int:pk>/", views.ReturnUpdateView.as_view(), name="return-update"),
     path("returns/<int:pk>/delete/", views.ReturnDeleteView.as_view(), name="return-delete"),
+
+    path('invoices/<int:pk>/summary/', views.InvoiceSummaryView.as_view(), name='invoice-summary'),
+
 ]

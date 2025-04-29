@@ -465,3 +465,18 @@ class ProductSummarySerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.cover_design.url)
         return None
 
+class POSProductSummarySerializer(ProductSummarySerializer):
+    warehouse_stock = serializers.SerializerMethodField()
+    
+    class Meta(ProductSummarySerializer.Meta):
+        fields = ProductSummarySerializer.Meta.fields + ['warehouse_stock']
+    
+    def get_warehouse_stock(self, obj):
+        warehouse_id = self.context.get('warehouse_id')
+        if warehouse_id:
+            try:
+                inventory = Inventory.objects.get(product=obj, warehouse_id=warehouse_id)
+                return inventory.quantity
+            except Inventory.DoesNotExist:
+                return 0
+        return None

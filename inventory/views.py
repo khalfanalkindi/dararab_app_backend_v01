@@ -1,4 +1,4 @@
-from rest_framework import generics
+from rest_framework import generics, viewsets
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import ProtectedError, Sum, Count, OuterRef, Subquery
 from rest_framework.response import Response
@@ -13,7 +13,7 @@ from .models import (
     Contract, PrintTask
 )
 from .serializers import (
-    PrintRunSerializer, ProductSummarySerializer, ProjectSerializer, ProductSerializer, StakeholderSerializer, WarehouseSerializer,
+    POSProductSummarySerializer, PrintRunSerializer, ProductSummarySerializer, ProjectSerializer, ProductSerializer, StakeholderSerializer, WarehouseSerializer,
     InventorySerializer, TransferSerializer,
     AuthorSerializer, TranslatorSerializer, RightsOwnerSerializer,
     ReviewerSerializer, ContractSerializer, PrintTaskSerializer
@@ -560,4 +560,36 @@ class ProductSummaryView(generics.ListAPIView):
     def get_serializer_context(self):
 
         return { 'request': self.request }
+    
+class POSProductViewSet(viewsets.ModelViewSet):
+    serializer_class = POSProductSummarySerializer
+    
+    def get_queryset(self):
+        latest = PrintRun.objects.filter(product=OuterRef('pk'))\
+                                 .order_by('-edition_number')
+        queryset = (
+            Product.objects
+                   .annotate(
+                       editions_count=Count('print_runs', distinct=True),
+                       stock=Sum('inventory__quantity'),
+                       latest_price=Subquery(latest.values('price')[:1]),
+                       latest_cost=Subquery(latest.values('print_cost')[:1]),
+                   )
+                   .select_related('genre','status','author','translator')
+                   .order_by('id')
+        )
+        
+        warehouse_id = self.request.query_params.get('warehouse_id')
+        if warehouse_id:
+            queryset = queryset.filter(
+                inventory__warehouse_id=warehouse_id,
+                inventory__quantity__gt=0
+            ).distinct()
+            
+        return queryset
+    
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['warehouse_id'] = self.request.query_params.get('warehouse_id')
+        return context
 

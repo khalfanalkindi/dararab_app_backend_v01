@@ -15,6 +15,7 @@ urlpatterns = [
     path("products/<int:pk>/detail/",views.ProductRetrieveView.as_view(),name="product-retrieve"),
 
     path('product-summary/', views.ProductSummaryView.as_view(), name='product-summary'),
+    path('pos-product-summary/', views.POSProductViewSet.as_view({'get': 'list'}), name='pos-product-summary'),
 
       ### ===== print Runs =====
     path("print-runs/",views.PrintRunListCreateView.as_view(),   name="printrun-list-create"),

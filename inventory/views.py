@@ -255,11 +255,15 @@ class InventoryListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         queryset = Inventory.objects.all()
-        product_id = self.request.query_params.get('product_id', None)
-        if product_id is not None:
-            queryset = queryset.filter(product_id=product_id)
-        return queryset
+        product_id = self.request.query_params.get('product_id')
+        warehouse_id = self.request.query_params.get('warehouse_id')
 
+        if product_id:
+            queryset = queryset.filter(product_id=product_id)
+        if warehouse_id:
+            queryset = queryset.filter(warehouse_id=warehouse_id)
+        
+        return queryset
     def create(self, request, *args, **kwargs):
         # Handle frontend data format
         data = request.data.copy()

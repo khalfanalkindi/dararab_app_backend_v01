@@ -109,20 +109,29 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 #        }
 #    }
 #}
+MYSQL_DB_NAME = os.getenv("MYSQLDATABASE")
+MYSQL_DB_USER = os.getenv("MYSQLUSER")
+MYSQL_DB_PASSWORD = os.getenv("MYSQLPASSWORD")
+MYSQL_DB_HOST = os.getenv("MYSQLHOST")
+MYSQL_DB_PORT = os.getenv("MYSQLPORT", "3306")
+
+if not all([MYSQL_DB_NAME, MYSQL_DB_USER, MYSQL_DB_PASSWORD, MYSQL_DB_HOST]):
+    raise Exception("❌ MySQL environment variables are missing. Check Railway variable promotion.")
 
 DATABASES = {
     'default': {
         'ENGINE': 'mysql.connector.django',
-        'NAME': os.getenv("MYSQLDATABASE"),
-        'USER': os.getenv("MYSQLUSER"),
-        'PASSWORD': os.getenv("MYSQLPASSWORD"),
-        'HOST': os.getenv("MYSQLHOST"),
-        'PORT': os.getenv("MYSQLPORT", "3306"),
+        'NAME': MYSQL_DB_NAME,
+        'USER': MYSQL_DB_USER,
+        'PASSWORD': MYSQL_DB_PASSWORD,
+        'HOST': MYSQL_DB_HOST,
+        'PORT': MYSQL_DB_PORT,
         'OPTIONS': {
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
         }
     }
 }
+
 
 
 

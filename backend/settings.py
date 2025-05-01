@@ -38,6 +38,12 @@ ALLOWED_HOSTS = [
     ".railway.app",  # Allow all Railway subdomains
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://dararabappbackendv01-production.up.railway.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 
 
 # Application definition

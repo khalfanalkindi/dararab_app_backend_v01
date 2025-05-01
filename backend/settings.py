@@ -15,243 +15,233 @@ import os
 from pathlib import Path
 from django.utils.translation import gettext_lazy as _
 
-import dj_database_url
-
-print('the new changes')
-
-# At the top of your settings after other imports
-if os.getenv("DATABASE_URL"):
-    DATABASES = {
-        'default': dj_database_url.config(conn_max_age=600, conn_health_checks=True)
-    }
-else:
 
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-    BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-    # Quick-start development settings - unsuitable for production
-    # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
+# Quick-start development settings - unsuitable for production
+# See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
-    # SECURITY WARNING: keep the secret key used in production secret!
-    SECRET_KEY = 'django-insecure-z06k@8=g!c)sw7dc)-#f21djg(@t13sodr_ka8=zxb@!6igjwu'
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = 'django-insecure-z06k@8=g!c)sw7dc)-#f21djg(@t13sodr_ka8=zxb@!6igjwu'
 
-    # SECURITY WARNING: don't run with debug turned on in production!
-    DEBUG = True
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = True
 
-    ALLOWED_HOSTS = [
-        "dararabappbackendv01-production.up.railway.app",
-        "127.0.0.1",
-        "localhost"
-    ]
-
-
-
-    # Application definition
-
-    INSTALLED_APPS = [
-        'django.contrib.admin',
-        'django.contrib.auth',
-        'django.contrib.contenttypes',
-        'django.contrib.sessions',
-        'django.contrib.messages',
-        'django.contrib.staticfiles',
-        'rest_framework',
-        'rest_framework_simplejwt',
-        'corsheaders',
-        'users',
-        'inventory',
-        'sales',
-        'common',
-        "rest_framework_simplejwt.token_blacklist",
-    ]
+ALLOWED_HOSTS = [
+    "dararabappbackendv01-production.up.railway.app",
+    "127.0.0.1",
+    "localhost"
+]
 
 
 
-    MIDDLEWARE = [
-        'corsheaders.middleware.CorsMiddleware',
-        'django.middleware.security.SecurityMiddleware',
-        'django.contrib.sessions.middleware.SessionMiddleware',
-        'django.middleware.common.CommonMiddleware',
-        'django.middleware.csrf.CsrfViewMiddleware',
-        'django.contrib.auth.middleware.AuthenticationMiddleware',
-        'django.contrib.messages.middleware.MessageMiddleware',
-        'django.middleware.clickjacking.XFrameOptionsMiddleware',
-        'django.middleware.locale.LocaleMiddleware',
-    ]
+# Application definition
+
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rest_framework',
+    'rest_framework_simplejwt',
+    'corsheaders',
+    'users',
+    'inventory',
+    'sales',
+    'common',
+    "rest_framework_simplejwt.token_blacklist",
+]
 
 
-    ROOT_URLCONF = 'backend.urls'
 
-    TEMPLATES = [
-        {
-            'BACKEND': 'django.template.backends.django.DjangoTemplates',
-            'DIRS': [],
-            'APP_DIRS': True,
-            'OPTIONS': {
-                'context_processors': [
-                    'django.template.context_processors.debug',
-                    'django.template.context_processors.request',
-                    'django.contrib.auth.context_processors.auth',
-                    'django.contrib.messages.context_processors.messages',
-                ],
-            },
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
+]
+
+
+ROOT_URLCONF = 'backend.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
         },
-    ]
+    },
+]
 
-    WSGI_APPLICATION = 'backend.wsgi.application'
-
-
-    # Database
-    # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
-
-    #DATABASES = {
-    #    'default': {
-    #        'ENGINE': 'django.db.backends.mysql',
-    #        'NAME': 'dararab_db',
-    #        'USER': 'dararab_user',
-    #        'PASSWORD': 'dararab123',
-    #        'HOST': 'localhost',
-    #        'PORT': '3306',
-    #        'OPTIONS': {
-    #            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
-    #        }
-    #    }
-    #}
-    MYSQL_DB_NAME = os.getenv("MYSQLDATABASE")
-    MYSQL_DB_USER = os.getenv("MYSQLUSER")
-    MYSQL_DB_PASSWORD = os.getenv("MYSQLPASSWORD")
-    MYSQL_DB_HOST = os.getenv("MYSQLHOST")
-    MYSQL_DB_PORT = os.getenv("MYSQLPORT", "3306")
+WSGI_APPLICATION = 'backend.wsgi.application'
 
 
-    if not all([MYSQL_DB_NAME, MYSQL_DB_USER, MYSQL_DB_PASSWORD, MYSQL_DB_HOST]):
-        raise Exception("❌ after updated the new logs:MySQL environment variables are missing. Check Railway variable promotion.")
+# Database
+# https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-    DATABASES = {
-        'default': {
-            'ENGINE': 'mysql.connector.django',
-            'NAME': MYSQL_DB_NAME,
-            'USER': MYSQL_DB_USER,
-            'PASSWORD': MYSQL_DB_PASSWORD,
-            'HOST': MYSQL_DB_HOST,
-            'PORT': MYSQL_DB_PORT,
-            'OPTIONS': {
-                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
-            }
+#DATABASES = {
+#    'default': {
+#        'ENGINE': 'django.db.backends.mysql',
+#        'NAME': 'dararab_db',
+#        'USER': 'dararab_user',
+#        'PASSWORD': 'dararab123',
+#        'HOST': 'localhost',
+#        'PORT': '3306',
+#        'OPTIONS': {
+#            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
+#        }
+#    }
+#}
+MYSQL_DB_NAME = os.getenv("MYSQLDATABASE")
+MYSQL_DB_USER = os.getenv("MYSQLUSER")
+MYSQL_DB_PASSWORD = os.getenv("MYSQLPASSWORD")
+MYSQL_DB_HOST = os.getenv("MYSQLHOST")
+MYSQL_DB_PORT = os.getenv("MYSQLPORT", "3306")
+
+
+if not all([MYSQL_DB_NAME, MYSQL_DB_USER, MYSQL_DB_PASSWORD, MYSQL_DB_HOST]):
+    raise Exception("❌ after updated the new logs:MySQL environment variables are missing. Check Railway variable promotion.")
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'mysql.connector.django',
+        'NAME': MYSQL_DB_NAME,
+        'USER': MYSQL_DB_USER,
+        'PASSWORD': MYSQL_DB_PASSWORD,
+        'HOST': MYSQL_DB_HOST,
+        'PORT': MYSQL_DB_PORT,
+        'OPTIONS': {
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
         }
     }
+}
 
 
-    print("🔍 MYSQL_DATABASE =", os.getenv("MYSQLDATABASE"))
-    print("🔍 MYSQL_USER =", os.getenv("MYSQLUSER"))
-    print("🔍 MYSQL_PASSWORD =", os.getenv("MYSQLPASSWORD"))
-    print("🔍 MYSQL_HOST =", os.getenv("MYSQLHOST"))
-    print("🔍 MYSQL_PORT =", os.getenv("MYSQLPORT"))
-
-
-
-
+print("🔍 MYSQL_DATABASE =", os.getenv("MYSQLDATABASE"))
+print("🔍 MYSQL_USER =", os.getenv("MYSQLUSER"))
+print("🔍 MYSQL_PASSWORD =", os.getenv("MYSQLPASSWORD"))
+print("🔍 MYSQL_HOST =", os.getenv("MYSQLHOST"))
+print("🔍 MYSQL_PORT =", os.getenv("MYSQLPORT"))
 
 
 
 
 
-    # Password validation
-    # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
-
-    AUTH_PASSWORD_VALIDATORS = [
-        {
-            'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-        },
-        {
-            'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-        },
-        {
-            'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-        },
-        {
-            'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-        },
-    ]
-
-
-    # Internationalization
-    # https://docs.djangoproject.com/en/5.0/topics/i18n/
-
-    LANGUAGE_CODE = 'en-us'
-
-    TIME_ZONE = 'UTC'
-
-    USE_I18N = True
-
-    USE_TZ = True
-
-
-    # Static files (CSS, JavaScript, Images)
-    # https://docs.djangoproject.com/en/5.0/howto/static-files/
-
-    STATIC_URL = 'static/'
-    STATIC_ROOT = BASE_DIR / 'staticfiles'
-
-    # Media files (Uploads)
-    MEDIA_URL = '/media/'
-    MEDIA_ROOT = BASE_DIR / 'media'
-
-    # Default primary key field type
-    # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
-
-    DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-    REST_FRAMEWORK = {
-        'DEFAULT_AUTHENTICATION_CLASSES': (
-            'rest_framework_simplejwt.authentication.JWTAuthentication',
-        ),
-    'DEFAULT_PAGINATION_CLASS': 'inventory.pagination.StandardResultsSetPagination',
-        'PAGE_SIZE': 25,
-    }
-
-    CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security
-    CORS_ALLOWED_ORIGINS = [
-        "http://localhost:3000",  # ✅ Next.js Frontend
-        "http://127.0.0.1:3000",  # ✅ Alternative Localhost
-    ]
-
-    CSRF_TRUSTED_ORIGINS = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
-
-    CORS_ALLOW_CREDENTIALS = True
 
 
 
-    AUTH_USER_MODEL = 'users.CustomUser'
+
+# Password validation
+# https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
+
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+]
 
 
-    SIMPLE_JWT = {
-        'ACCESS_TOKEN_LIFETIME': timedelta(days=7),  # 🔹 Increase Access Token to 7 days
-        'REFRESH_TOKEN_LIFETIME': timedelta(days=30),  # 🔹 Increase Refresh Token to 30 days
-        'ROTATE_REFRESH_TOKENS': True,  # 🔹 Generate a new refresh token each time a refresh occurs
-        'BLACKLIST_AFTER_ROTATION': True,  # 🔹 Blacklist old refresh tokens after they are rotated
-        'ALGORITHM': 'HS256',
-        'SIGNING_KEY': SECRET_KEY,
-        'VERIFYING_KEY': None,
-        'AUTH_HEADER_TYPES': ('Bearer',),
-        'USER_ID_FIELD': 'id',
-        'USER_ID_CLAIM': 'user_id',
-        'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
-    }
+# Internationalization
+# https://docs.djangoproject.com/en/5.0/topics/i18n/
 
-    LANGUAGES = [
-        ('en', _('English')),
-        ('ar', _('Arabic')),
-    ]
+LANGUAGE_CODE = 'en-us'
 
-    LOCALE_PATHS = [
-        BASE_DIR / 'locale',
-    ]
+TIME_ZONE = 'UTC'
 
-    SIMPLE_JWT["BLACKLIST_AFTER_ROTATION"] = True
+USE_I18N = True
+
+USE_TZ = True
+
+
+# Static files (CSS, JavaScript, Images)
+# https://docs.djangoproject.com/en/5.0/howto/static-files/
+
+STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Media files (Uploads)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Default primary key field type
+# https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+   'DEFAULT_PAGINATION_CLASS': 'inventory.pagination.StandardResultsSetPagination',
+    'PAGE_SIZE': 25,
+}
+
+CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",  # ✅ Next.js Frontend
+    "http://127.0.0.1:3000",  # ✅ Alternative Localhost
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
+
+
+AUTH_USER_MODEL = 'users.CustomUser'
+
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=7),  # 🔹 Increase Access Token to 7 days
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),  # 🔹 Increase Refresh Token to 30 days
+    'ROTATE_REFRESH_TOKENS': True,  # 🔹 Generate a new refresh token each time a refresh occurs
+    'BLACKLIST_AFTER_ROTATION': True,  # 🔹 Blacklist old refresh tokens after they are rotated
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'VERIFYING_KEY': None,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+}
+
+LANGUAGES = [
+    ('en', _('English')),
+    ('ar', _('Arabic')),
+]
+
+LOCALE_PATHS = [
+    BASE_DIR / 'locale',
+]
+
+SIMPLE_JWT["BLACKLIST_AFTER_ROTATION"] = True

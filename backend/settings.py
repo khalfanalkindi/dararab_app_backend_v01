@@ -97,49 +97,27 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-#DATABASES = {
-#    'default': {
-#        'ENGINE': 'django.db.backends.mysql',
-#        'NAME': 'dararab_db',
-#        'USER': 'dararab_user',
-#        'PASSWORD': 'dararab123',
-#        'HOST': 'localhost',
-#        'PORT': '3306',
-#        'OPTIONS': {
-#            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
-#        }
-#    }
-#}
-MYSQL_DB_NAME = os.getenv("MYSQL_DATABASE")
-MYSQL_DB_USER = os.getenv("MYSQL_USER")
-MYSQL_DB_PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD")
-MYSQL_DB_HOST = os.getenv("MYSQL_HOST")
-MYSQL_DB_PORT = os.getenv("MYSQL_PORT", "3306")
+# Get the MySQL URL from Railway
+MYSQL_URL = os.getenv('MYSQL_URL')
 
-
-if not all([MYSQL_DB_NAME, MYSQL_DB_USER, MYSQL_DB_PASSWORD, MYSQL_DB_HOST]):
-    raise Exception("❌ MySQL environment variables are missing. Check Railway variable names: MYSQL_DATABASE, MYSQL_USER, MYSQL_ROOT_PASSWORD, MYSQL_HOST")
+if not MYSQL_URL:
+    raise Exception("❌ MYSQL_URL environment variable is missing. Check Railway configuration.")
 
 DATABASES = {
     'default': {
         'ENGINE': 'mysql.connector.django',
-        'NAME': MYSQL_DB_NAME,
-        'USER': MYSQL_DB_USER,
-        'PASSWORD': MYSQL_DB_PASSWORD,
-        'HOST': MYSQL_DB_HOST,
-        'PORT': MYSQL_DB_PORT,
+        'NAME': MYSQL_URL.split('/')[-1],  # Gets database name from URL
+        'USER': MYSQL_URL.split('://')[1].split(':')[0],  # Gets username from URL
+        'PASSWORD': MYSQL_URL.split(':')[2].split('@')[0],  # Gets password from URL
+        'HOST': MYSQL_URL.split('@')[1].split(':')[0],  # Gets host from URL
+        'PORT': MYSQL_URL.split(':')[-1].split('/')[0],  # Gets port from URL
         'OPTIONS': {
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
         }
     }
 }
 
-
-print("🔍 MYSQL_DATABASE =", os.getenv("MYSQL_DATABASE"))
-print("🔍 MYSQL_USER =", os.getenv("MYSQL_USER"))
-print("🔍 MYSQL_ROOT_PASSWORD =", os.getenv("MYSQL_ROOT_PASSWORD"))
-print("🔍 MYSQL_HOST =", os.getenv("MYSQL_HOST"))
-print("🔍 MYSQL_PORT =", os.getenv("MYSQL_PORT"))
+print("🔍 Using MYSQL_URL for database connection")
 
 
 

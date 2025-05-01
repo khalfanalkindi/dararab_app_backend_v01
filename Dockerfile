@@ -24,7 +24,9 @@ RUN mkdir -p staticfiles
 
 # Create entrypoint script
 RUN echo '#!/bin/bash\n\
-gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT' > /app/entrypoint.sh \
+python manage.py collectstatic --noinput\n\
+python manage.py migrate --noinput\n\
+gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --workers 4 --threads 2' > /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh
 
 # Command to run the application

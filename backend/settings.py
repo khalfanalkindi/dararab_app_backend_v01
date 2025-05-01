@@ -110,15 +110,15 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 #        }
 #    }
 #}
-MYSQL_DB_NAME = os.getenv("MYSQLDATABASE")
-MYSQL_DB_USER = os.getenv("MYSQLUSER")
-MYSQL_DB_PASSWORD = os.getenv("MYSQLPASSWORD")
-MYSQL_DB_HOST = os.getenv("MYSQLHOST")
-MYSQL_DB_PORT = os.getenv("MYSQLPORT", "3306")
+MYSQL_DB_NAME = os.getenv("MYSQL_DATABASE")
+MYSQL_DB_USER = os.getenv("MYSQL_USER")
+MYSQL_DB_PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD")
+MYSQL_DB_HOST = os.getenv("MYSQL_HOST")
+MYSQL_DB_PORT = os.getenv("MYSQL_PORT", "3306")
 
 
 if not all([MYSQL_DB_NAME, MYSQL_DB_USER, MYSQL_DB_PASSWORD, MYSQL_DB_HOST]):
-    raise Exception("❌ after updated the new logs:MySQL environment variables are missing. Check Railway variable promotion.")
+    raise Exception("❌ MySQL environment variables are missing. Check Railway variable names: MYSQL_DATABASE, MYSQL_USER, MYSQL_ROOT_PASSWORD, MYSQL_HOST")
 
 DATABASES = {
     'default': {
@@ -135,11 +135,11 @@ DATABASES = {
 }
 
 
-print("🔍 MYSQL_DATABASE =", os.getenv("MYSQLDATABASE"))
-print("🔍 MYSQL_USER =", os.getenv("MYSQLUSER"))
-print("🔍 MYSQL_PASSWORD =", os.getenv("MYSQLPASSWORD"))
-print("🔍 MYSQL_HOST =", os.getenv("MYSQLHOST"))
-print("🔍 MYSQL_PORT =", os.getenv("MYSQLPORT"))
+print("🔍 MYSQL_DATABASE =", os.getenv("MYSQL_DATABASE"))
+print("🔍 MYSQL_USER =", os.getenv("MYSQL_USER"))
+print("🔍 MYSQL_ROOT_PASSWORD =", os.getenv("MYSQL_ROOT_PASSWORD"))
+print("🔍 MYSQL_HOST =", os.getenv("MYSQL_HOST"))
+print("🔍 MYSQL_PORT =", os.getenv("MYSQL_PORT"))
 
 
 

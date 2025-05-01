@@ -159,7 +159,6 @@ more-itertools==10.5.0
 msgpack==1.0.5
 multidict==6.0.4
 mysql-connector-python==8.0.33
-mysqlclient==2.2.7
 narwhals==1.22.0
 nest-asyncio==1.5.7
 nh3==0.2.20

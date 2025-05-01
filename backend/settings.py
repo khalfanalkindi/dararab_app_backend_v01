@@ -105,14 +105,16 @@ if not MYSQL_URL:
 
 DATABASES = {
     'default': {
-        'ENGINE': 'mysql.connector.django',
-        'NAME': MYSQL_URL.split('/')[-1],  # Gets database name from URL
-        'USER': MYSQL_URL.split('://')[1].split(':')[0],  # Gets username from URL
-        'PASSWORD': MYSQL_URL.split(':')[2].split('@')[0],  # Gets password from URL
-        'HOST': MYSQL_URL.split('@')[1].split(':')[0],  # Gets host from URL
-        'PORT': MYSQL_URL.split(':')[-1].split('/')[0],  # Gets port from URL
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': MYSQL_URL.split('/')[-1],
+        'USER': MYSQL_URL.split('://')[1].split(':')[0],
+        'PASSWORD': MYSQL_URL.split(':')[2].split('@')[0],
+        'HOST': MYSQL_URL.split('@')[1].split(':')[0],
+        'PORT': MYSQL_URL.split(':')[-1].split('/')[0],
         'OPTIONS': {
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'"
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            'charset': 'utf8mb4',
+            'use_unicode': True,
         }
     }
 }

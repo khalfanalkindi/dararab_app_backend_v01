@@ -1,1 +1,2 @@
-web: python manage.py migrate --noinput && python manage.py collectstatic --noinput && python manage.py createsuperuser --noinput && gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT
+release: python manage.py collectstatic --noinput && python manage.py migrate && echo "from django.contrib.auth import get_user_model; User = get_user_model(); User.objects.create_superuser('admin', 'admin@example.com', 'adminpass')" | python manage.py shell
+web: gunicorn backend.wsgi

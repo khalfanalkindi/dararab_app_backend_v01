@@ -34,7 +34,8 @@ DEBUG = True
 ALLOWED_HOSTS = [
     "dararabappbackendv01-production.up.railway.app",
     "127.0.0.1",
-    "localhost"
+    "localhost",
+    ".railway.app",  # Allow all Railway subdomains
 ]
 
 
@@ -161,14 +162,20 @@ USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.0/howto/static-files/
-
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_DIRS = []
 
 # Media files (Uploads)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Create directories if they don't exist
+STATIC_ROOT.mkdir(parents=True, exist_ok=True)
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Simplified static file serving for production
+STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
@@ -225,3 +232,11 @@ LOCALE_PATHS = [
 ]
 
 SIMPLE_JWT["BLACKLIST_AFTER_ROTATION"] = True
+
+# Security settings for production
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True

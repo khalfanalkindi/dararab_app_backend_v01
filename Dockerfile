@@ -19,8 +19,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Collect static files
-RUN python manage.py collectstatic --noinput
+# Create directory for static files
+RUN mkdir -p staticfiles
+
+# Create entrypoint script
+RUN echo '#!/bin/bash\n\
+python manage.py collectstatic --noinput\n\
+python manage.py migrate\n\
+gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT' > /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh
 
 # Command to run the application
-CMD ["gunicorn", "backend.wsgi:application", "--bind", "0.0.0.0:$PORT"] 
+ENTRYPOINT ["/app/entrypoint.sh"] 

@@ -17,6 +17,8 @@ from django.utils.translation import gettext_lazy as _
 
 import dj_database_url
 
+print('the new changes')
+
 # At the top of your settings after other imports
 if os.getenv("DATABASE_URL"):
     DATABASES = {

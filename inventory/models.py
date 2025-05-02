@@ -129,7 +129,7 @@ class PrintRun(AuditModel):
 class Warehouse(AuditModel):
     name_en = models.CharField(max_length=255)
     name_ar = models.CharField(max_length=255)
-    type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='warehouses')
+    type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='warehouse_type')
     location = models.CharField(max_length=255)
 
     def __str__(self):

@@ -42,6 +42,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://dararabappbackendv01-production.up.railway.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://dararabappfrontendv01-production.up.railway.app",
 ]
 
 
@@ -202,6 +203,7 @@ CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # ✅ Next.js Frontend
     "http://127.0.0.1:3000",  # ✅ Alternative Localhost
+    "https://dararabappfrontendv01-production.up.railway.app",
 ]
 
 

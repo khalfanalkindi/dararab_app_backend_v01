@@ -130,6 +130,11 @@ DATABASES = {
     }
 }
 
+print('--------------------------------')
+
+
+print(DATABASES)
+print('--------------------------------')
 print("🔍 Using MYSQL_URL for database connection")
 
 

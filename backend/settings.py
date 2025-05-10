@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'inventory',
     'sales',
     'common',
+    'django_filters',
     "rest_framework_simplejwt.token_blacklist",
     'whitenoise.runserver_nostatic',
 ]
@@ -197,6 +198,7 @@ REST_FRAMEWORK = {
     ),
    'DEFAULT_PAGINATION_CLASS': 'inventory.pagination.StandardResultsSetPagination',
     'PAGE_SIZE': 25,
+    'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
 }
 
 CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security

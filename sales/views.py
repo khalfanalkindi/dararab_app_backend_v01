@@ -1,4 +1,6 @@
-from rest_framework import generics
+from rest_framework import generics, viewsets
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters as drf_filters
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
@@ -6,7 +8,7 @@ from django.db.models import ProtectedError
 
 from .models import Customer, Invoice, InvoiceItem, Payment, Return
 from .serializers import (
-    CustomerSerializer, InvoiceSerializer, InvoiceItemSerializer, InvoiceSummarySerializer,
+    CustomerSerializer, InvoiceFilter, InvoiceSerializer, InvoiceItemSerializer, InvoiceSummarySerializer,
     PaymentSerializer, ReturnSerializer
 )
 
@@ -46,10 +48,16 @@ class CustomerDeleteView(BaseDeleteView):
     serializer_class = CustomerSerializer
 
 # ======== Invoices ========
+
+
+
 class InvoiceListCreateView(generics.ListCreateAPIView):
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, drf_filters.SearchFilter]
+    filterset_class = InvoiceFilter
+    search_fields = ['id', 'customer__institution_name', 'customer__contact_person']
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)

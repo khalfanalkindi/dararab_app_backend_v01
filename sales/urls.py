@@ -30,4 +30,6 @@ urlpatterns = [
 
     path('invoices/<int:pk>/summary/', views.InvoiceSummaryView.as_view(), name='invoice-summary'),
 
+    path('warehouse-dashboard/', views.WarehouseDashboardView.as_view(), name='warehouse-dashboard'),
+
 ]

@@ -5,6 +5,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import ProtectedError
+from rest_framework.views import APIView
+from django.db.models import Sum, Count, Avg, F, Q
+from inventory.models import Product
+from datetime import datetime
 
 from .models import Customer, Invoice, InvoiceItem, Payment, Return
 from .serializers import (
@@ -156,3 +160,99 @@ class InvoiceSummaryView(generics.RetrieveAPIView):
             'invoiceitem_set__product',
             'payment_set'
         )
+
+class WarehouseDashboardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        warehouse_id = request.query_params.get('warehouse_id')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        print("Received params:", warehouse_id, start_date, end_date)
+
+        if not warehouse_id or not start_date or not end_date:
+            return Response(
+                {"detail": "warehouse_id, start_date, and end_date are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        start_date = start_date.strip()
+        end_date = end_date.strip()
+
+        try:
+            start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError as e:
+            print("Date parsing error:", e)
+            return Response(
+                {"detail": "start_date and end_date must be in YYYY-MM-DD format."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        invoices = Invoice.objects.filter(
+            warehouse_id=warehouse_id,
+            created_at__date__gte=start_date_dt,
+            created_at__date__lte=end_date_dt
+        )
+
+        total_income = InvoiceItem.objects.filter(
+            invoice__in=invoices
+        ).aggregate(total=Sum('total_price'))['total'] or 0
+
+        # Calculate total income without discount
+        total_income_without_discount = InvoiceItem.objects.filter(
+            invoice__in=invoices
+        ).aggregate(
+            total=Sum(F('unit_price') * F('quantity'))
+        )['total'] or 0
+
+        total_books = InvoiceItem.objects.filter(
+            invoice__in=invoices
+        ).aggregate(total=Sum('quantity'))['total'] or 0
+
+        bills_with_discount = invoices.filter(
+            invoiceitem__discount_percent__gt=0
+        ).distinct().count()
+        total_bills = invoices.count()
+        avg_discount = InvoiceItem.objects.filter(
+            invoice__in=invoices,
+            discount_percent__gt=0
+        ).aggregate(avg=Avg('discount_percent'))['avg'] or 0
+
+        popular_books = (
+            InvoiceItem.objects.filter(invoice__in=invoices)
+            .values('product__title_ar')
+            .annotate(total=Sum('quantity'))
+            .order_by('-total')[:4]
+        )
+
+        # If you have a category field on Product, adjust accordingly
+        top_categories = (
+            InvoiceItem.objects.filter(invoice__in=invoices)
+            .values('product__genre__display_name_en')
+            .annotate(total=Sum('quantity'))
+            .order_by('-total')[:4]
+        )
+
+        daily_sales = (
+            InvoiceItem.objects.filter(invoice__in=invoices)
+            .values(date=F('invoice__created_at__date'))
+            .annotate(
+                sales=Sum('quantity'),
+                revenue=Sum('total_price')
+            )
+            .order_by('date')
+        )
+
+        return Response({
+            "total_income": total_income,
+            "total_income_without_discount": total_income_without_discount,
+            "total_books_sold": total_books,
+            "bills_with_discount": bills_with_discount,
+            "total_bills": total_bills,
+            "average_discount": avg_discount,
+            "popular_books": list(popular_books),
+            "top_categories": list(top_categories),
+            "daily_sales": list(daily_sales),
+        })

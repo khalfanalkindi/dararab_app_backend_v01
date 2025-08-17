@@ -32,4 +32,21 @@ urlpatterns = [
 
     path('warehouse-dashboard/', views.WarehouseDashboardView.as_view(), name='warehouse-dashboard'),
 
+    # New invoice filtering endpoints
+    path("invoices/main/", views.MainInvoiceListView.as_view(), name="main-invoice-list"),
+    path("invoices/sub/", views.SubInvoiceListView.as_view(), name="sub-invoice-list"),
+    path("invoices/<int:main_invoice_id>/children/", views.InvoiceChildrenView.as_view(), name="invoice-children"),
+    path("invoices/<int:invoice_id>/items/", views.InvoiceItemsView.as_view(), name="invoice-items"),
+    
+    # Partial payment endpoints
+    path("invoices/partial-payments/", views.PartialPaymentInvoiceListView.as_view(), name="partial-payment-invoices"),
+    path("invoices/outstanding-payments/", views.OutstandingPaymentInvoiceListView.as_view(), name="outstanding-payment-invoices"),
+    path("invoices/<int:parent_invoice_id>/generate-child/", views.GenerateChildInvoiceView.as_view(), name="generate-child-invoice"),
+    path("invoices/<int:pk>/payment-status/", views.InvoicePaymentStatusView.as_view(), name="invoice-payment-status"),
+    
+    # Debug endpoint
+    path("invoices/debug/payments/", views.InvoicePaymentDebugView.as_view(), name="invoice-payment-debug"),
+    path("invoices/debug/payment-distribution/", views.PaymentDistributionDebugView.as_view(), name="payment-distribution-debug"),
+    path("invoices/debug/<int:invoice_id>/", views.InvoiceDetailDebugView.as_view(), name="invoice-detail-debug"),
+
 ]

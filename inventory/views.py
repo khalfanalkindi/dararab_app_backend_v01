@@ -36,7 +36,7 @@ class BaseDeleteView(generics.DestroyAPIView):
 
 # ============================== Project ==============================
 class ProjectListCreateView(generics.ListCreateAPIView):
-    queryset = Project.objects.all()
+    queryset = Project.objects.all().order_by('-created_at', 'id')
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated]
 
@@ -44,7 +44,7 @@ class ProjectListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class ProjectUpdateView(generics.UpdateAPIView):
-    queryset = Project.objects.all()
+    queryset = Project.objects.all().order_by('id')
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated]
 
@@ -52,12 +52,12 @@ class ProjectUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class ProjectDeleteView(BaseDeleteView):
-    queryset = Project.objects.all()
+    queryset = Project.objects.all().order_by('id')
     serializer_class = ProjectSerializer
 
 # ============================== Product ==============================
 class ProductListCreateView(generics.ListCreateAPIView):
-    queryset = Product.objects.all()
+    queryset = Product.objects.all().order_by('-created_at', 'id')
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated]
 
@@ -70,7 +70,7 @@ class ProductListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class ProductUpdateView(generics.UpdateAPIView):
-    queryset = Product.objects.all()
+    queryset = Product.objects.all().order_by('id')
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated]
 
@@ -83,12 +83,12 @@ class ProductUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class ProductDeleteView(BaseDeleteView):
-    queryset = Product.objects.all()
+    queryset = Product.objects.all().order_by('id')
     serializer_class = ProductSerializer
 
 class ProductRetrieveView(generics.RetrieveAPIView):
 
-    queryset = Product.objects.all()
+    queryset = Product.objects.all().order_by('id')
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated]
 
@@ -100,7 +100,7 @@ class ProductRetrieveView(generics.RetrieveAPIView):
 
 
 class PrintRunListCreateView(generics.ListCreateAPIView):
-    queryset         = PrintRun.objects.all()
+    queryset         = PrintRun.objects.all().order_by('-created_at', 'id')
     serializer_class = PrintRunSerializer
     permission_classes = [IsAuthenticated]
 
@@ -158,7 +158,7 @@ class PrintRunListCreateView(generics.ListCreateAPIView):
 
 
 class PrintRunUpdateView(generics.UpdateAPIView):
-    queryset         = PrintRun.objects.all()
+    queryset         = PrintRun.objects.all().order_by('id')
     serializer_class = PrintRunSerializer
     permission_classes = [IsAuthenticated]
 
@@ -167,7 +167,7 @@ class PrintRunUpdateView(generics.UpdateAPIView):
 
 
 class PrintRunDeleteView(generics.DestroyAPIView):
-    queryset         = PrintRun.objects.all()
+    queryset         = PrintRun.objects.all().order_by('id')
     serializer_class = PrintRunSerializer
     permission_classes = [IsAuthenticated]
 
@@ -228,7 +228,7 @@ class PrintRunDeleteByProductEditionView(generics.DestroyAPIView):
 
 # ============================== Warehouse ==============================
 class WarehouseListCreateView(generics.ListCreateAPIView):
-    queryset = Warehouse.objects.all()
+    queryset = Warehouse.objects.all().order_by('name_en')
     serializer_class = WarehouseSerializer
     permission_classes = [IsAuthenticated]
 
@@ -236,7 +236,7 @@ class WarehouseListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class WarehouseUpdateView(generics.UpdateAPIView):
-    queryset = Warehouse.objects.all()
+    queryset = Warehouse.objects.all().order_by('id')
     serializer_class = WarehouseSerializer
     permission_classes = [IsAuthenticated]
 
@@ -244,7 +244,7 @@ class WarehouseUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class WarehouseDeleteView(BaseDeleteView):
-    queryset = Warehouse.objects.all()
+    queryset = Warehouse.objects.all().order_by('id')
     serializer_class = WarehouseSerializer
 
 # ============================== Inventory ==============================
@@ -254,7 +254,7 @@ class InventoryListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = Inventory.objects.all()
+        queryset = Inventory.objects.all().order_by('-created_at', 'id')
         product_id = self.request.query_params.get('product_id')
         warehouse_id = self.request.query_params.get('warehouse_id')
 
@@ -313,7 +313,7 @@ class InventoryListCreateView(generics.ListCreateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class InventoryUpdateView(generics.UpdateAPIView):
-    queryset = Inventory.objects.all()
+    queryset = Inventory.objects.all().order_by('id')
     serializer_class = InventorySerializer
     permission_classes = [IsAuthenticated]
 
@@ -321,7 +321,7 @@ class InventoryUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class InventoryDeleteView(BaseDeleteView):
-    queryset = Inventory.objects.all()
+    queryset = Inventory.objects.all().order_by('id')
     serializer_class = InventorySerializer
 
 # New views for product-specific inventory operations
@@ -372,7 +372,7 @@ class InventoryDeleteByProductView(generics.DestroyAPIView):
 
 # ============================== Transfer ==============================
 class TransferListCreateView(generics.ListCreateAPIView):
-    queryset = Transfer.objects.all()
+    queryset = Transfer.objects.all().order_by('-created_at', 'id')
     serializer_class = TransferSerializer
     permission_classes = [IsAuthenticated]
 
@@ -380,7 +380,7 @@ class TransferListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class TransferUpdateView(generics.UpdateAPIView):
-    queryset = Transfer.objects.all()
+    queryset = Transfer.objects.all().order_by('id')
     serializer_class = TransferSerializer
     permission_classes = [IsAuthenticated]
 
@@ -388,12 +388,12 @@ class TransferUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class TransferDeleteView(BaseDeleteView):
-    queryset = Transfer.objects.all()
+    queryset = Transfer.objects.all().order_by('id')
     serializer_class = TransferSerializer
 
 # ============================== People ==============================
 class AuthorListCreateView(generics.ListCreateAPIView):
-    queryset = Author.objects.all()
+    queryset = Author.objects.all().order_by('name')
     serializer_class = AuthorSerializer
     permission_classes = [IsAuthenticated]
 
@@ -401,7 +401,7 @@ class AuthorListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class AuthorUpdateView(generics.UpdateAPIView):
-    queryset = Author.objects.all()
+    queryset = Author.objects.all().order_by('id')
     serializer_class = AuthorSerializer
     permission_classes = [IsAuthenticated]
 
@@ -409,11 +409,11 @@ class AuthorUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class AuthorDeleteView(BaseDeleteView):
-    queryset = Author.objects.all()
+    queryset = Author.objects.all().order_by('id')
     serializer_class = AuthorSerializer
 
 class TranslatorListCreateView(generics.ListCreateAPIView):
-    queryset = Translator.objects.all()
+    queryset = Translator.objects.all().order_by('name')
     serializer_class = TranslatorSerializer
     permission_classes = [IsAuthenticated]
 
@@ -421,7 +421,7 @@ class TranslatorListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class TranslatorUpdateView(generics.UpdateAPIView):
-    queryset = Translator.objects.all()
+    queryset = Translator.objects.all().order_by('id')
     serializer_class = TranslatorSerializer
     permission_classes = [IsAuthenticated]
 
@@ -429,11 +429,11 @@ class TranslatorUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class TranslatorDeleteView(BaseDeleteView):
-    queryset = Translator.objects.all()
+    queryset = Translator.objects.all().order_by('id')
     serializer_class = TranslatorSerializer
 
 class RightsOwnerListCreateView(generics.ListCreateAPIView):
-    queryset = RightsOwner.objects.all()
+    queryset = RightsOwner.objects.all().order_by('name')
     serializer_class = RightsOwnerSerializer
     permission_classes = [IsAuthenticated]
 
@@ -441,7 +441,7 @@ class RightsOwnerListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class RightsOwnerUpdateView(generics.UpdateAPIView):
-    queryset = RightsOwner.objects.all()
+    queryset = RightsOwner.objects.all().order_by('id')
     serializer_class = RightsOwnerSerializer
     permission_classes = [IsAuthenticated]
 
@@ -449,11 +449,11 @@ class RightsOwnerUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class RightsOwnerDeleteView(BaseDeleteView):
-    queryset = RightsOwner.objects.all()
+    queryset = RightsOwner.objects.all().order_by('id')
     serializer_class = RightsOwnerSerializer
 
 class ReviewerListCreateView(generics.ListCreateAPIView):
-    queryset = Reviewer.objects.all()
+    queryset = Reviewer.objects.all().order_by('name')
     serializer_class = ReviewerSerializer
     permission_classes = [IsAuthenticated]
 
@@ -461,7 +461,7 @@ class ReviewerListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class ReviewerUpdateView(generics.UpdateAPIView):
-    queryset = Reviewer.objects.all()
+    queryset = Reviewer.objects.all().order_by('id')
     serializer_class = ReviewerSerializer
     permission_classes = [IsAuthenticated]
 
@@ -469,11 +469,11 @@ class ReviewerUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class ReviewerDeleteView(BaseDeleteView):
-    queryset = Reviewer.objects.all()
+    queryset = Reviewer.objects.all().order_by('id')
     serializer_class = ReviewerSerializer
 
 class StakeholderListCreateView(generics.ListCreateAPIView):
-    queryset = Stakeholder.objects.all()
+    queryset = Stakeholder.objects.all().order_by('name')
     serializer_class = StakeholderSerializer
     permission_classes = [IsAuthenticated]
 
@@ -481,7 +481,7 @@ class StakeholderListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class StakeholderUpdateView(generics.UpdateAPIView):
-    queryset = Stakeholder.objects.all()
+    queryset = Stakeholder.objects.all().order_by('id')
     serializer_class = StakeholderSerializer
     permission_classes = [IsAuthenticated]
 
@@ -489,7 +489,7 @@ class StakeholderUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class StakeholderDeleteView(generics.DestroyAPIView):
-    queryset = Stakeholder.objects.all()
+    queryset = Stakeholder.objects.all().order_by('id')
     serializer_class = StakeholderSerializer
     permission_classes = [IsAuthenticated]
 
@@ -497,7 +497,7 @@ class StakeholderDeleteView(generics.DestroyAPIView):
 # ============================== Contract ==============================
 
 class ContractListCreateView(generics.ListCreateAPIView):
-    queryset = Contract.objects.all()
+    queryset = Contract.objects.all().order_by('-created_at', 'id')
     serializer_class = ContractSerializer
     permission_classes = [IsAuthenticated]
 
@@ -505,7 +505,7 @@ class ContractListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class ContractUpdateView(generics.UpdateAPIView):
-    queryset = Contract.objects.all()
+    queryset = Contract.objects.all().order_by('id')
     serializer_class = ContractSerializer
     permission_classes = [IsAuthenticated]
 
@@ -513,14 +513,14 @@ class ContractUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class ContractDeleteView(generics.DestroyAPIView):
-    queryset = Contract.objects.all()
+    queryset = Contract.objects.all().order_by('id')
     serializer_class = ContractSerializer
     permission_classes = [IsAuthenticated]
 
 
 # ============================== PrintTask ==============================
 class PrintTaskListCreateView(generics.ListCreateAPIView):
-    queryset = PrintTask.objects.all()
+    queryset = PrintTask.objects.all().order_by('-created_at', 'id')
     serializer_class = PrintTaskSerializer
     permission_classes = [IsAuthenticated]
 
@@ -528,7 +528,7 @@ class PrintTaskListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
 class PrintTaskUpdateView(generics.UpdateAPIView):
-    queryset = PrintTask.objects.all()
+    queryset = PrintTask.objects.all().order_by('id')
     serializer_class = PrintTaskSerializer
     permission_classes = [IsAuthenticated]
 
@@ -536,7 +536,7 @@ class PrintTaskUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class PrintTaskDeleteView(BaseDeleteView):
-    queryset = PrintTask.objects.all()
+    queryset = PrintTask.objects.all().order_by('id')
     serializer_class = PrintTaskSerializer
 
 #----

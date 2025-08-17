@@ -23,33 +23,33 @@ class BaseDeleteView(generics.DestroyAPIView):
 
 # === ListTypes ===
 class ListTypeListCreateView(generics.ListCreateAPIView):
-    queryset = ListType.objects.all()
+    queryset = ListType.objects.all().order_by('id')
     serializer_class = ListTypeSerializer
     permission_classes = [IsAuthenticated]
 
 class ListTypeUpdateView(generics.UpdateAPIView):
-    queryset = ListType.objects.all()
+    queryset = ListType.objects.all().order_by('id')
     serializer_class = ListTypeSerializer
     permission_classes = [IsAuthenticated]
 
 class ListTypeDeleteView(BaseDeleteView):
-    queryset = ListType.objects.all()
+    queryset = ListType.objects.all().order_by('id')
     serializer_class = ListTypeSerializer
 
 
 # === ListItems ===
 class ListItemListCreateView(generics.ListCreateAPIView):
-    queryset = ListItem.objects.all()
+    queryset = ListItem.objects.all().order_by('list_type__code', 'value')
     serializer_class = ListItemSerializer
     permission_classes = [IsAuthenticated]
 
 class ListItemUpdateView(generics.UpdateAPIView):
-    queryset = ListItem.objects.all()
+    queryset = ListItem.objects.all().order_by('id')
     serializer_class = ListItemSerializer
     permission_classes = [IsAuthenticated]
 
 class ListItemDeleteView(BaseDeleteView):
-    queryset = ListItem.objects.all()
+    queryset = ListItem.objects.all().order_by('id')
     serializer_class = ListItemSerializer
 
 class ListItemByTypeView(generics.ListAPIView):
@@ -58,4 +58,4 @@ class ListItemByTypeView(generics.ListAPIView):
 
     def get_queryset(self):
         type_code = self.kwargs.get("code")
-        return ListItem.objects.filter(list_type__code=type_code, is_active=True)
+        return ListItem.objects.filter(list_type__code=type_code, is_active=True).order_by('value')

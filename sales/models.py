@@ -39,9 +39,124 @@ class Invoice(AuditModel):
     is_returnable = models.BooleanField(default=True)
     main_invoice = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True)
     notes = models.TextField(blank=True)
+    
+    # Composite ID for display and search
+    composite_id = models.CharField(max_length=50, null=True, blank=True, unique=True)
+    
+    def save(self, *args, **kwargs):
+        # First save to get the ID
+        super().save(*args, **kwargs)
+
+        # Generate composite ID if not set (after we have the ID)
+        if not self.composite_id:
+            if self.main_invoice:
+                # ✅ Child invoice: parent_child (e.g., "160_161")
+                self.composite_id = f"{self.main_invoice.id}_{self.id}"
+            else:
+                # ✅ Main invoice: just its own ID
+                self.composite_id = str(self.id)
+            super().save(update_fields=['composite_id'])
+
+    
+    @property
+    def total_amount(self):
+        """Get total invoice amount"""
+        return sum(item.total_price for item in self.invoiceitem_set.all())
+    
+    @property
+    def total_paid_amount(self):
+        """Get total paid amount"""
+        return sum(item.paid_amount for item in self.invoiceitem_set.all())
+    
+    @property
+    def total_remaining_amount(self):
+        """Get total remaining amount"""
+        return sum(item.remaining_amount for item in self.invoiceitem_set.all())
+    
+    @property
+    def payment_status(self):
+        """Get overall payment status"""
+        if self.total_amount == 0:
+            return 100
+        return (self.total_paid_amount / self.total_amount) * 100
+    
+    @property
+    def is_fully_paid(self):
+        """Check if invoice is fully paid"""
+        return self.total_paid_amount >= self.total_amount
+    
+    @property
+    def has_partial_payments(self):
+        """Check if invoice has partial payments"""
+        return self.total_paid_amount > 0 and not self.is_fully_paid
+    
+    @property
+    def unpaid_items(self):
+        """Get unpaid items"""
+        return self.invoiceitem_set.filter(is_paid=False)
+    
+    @property
+    def paid_items(self):
+        """Get paid items"""
+        return self.invoiceitem_set.filter(is_paid=True)
+    
+    def generate_child_invoice(self, paid_items_only=True):
+        """Generate a child invoice from this invoice"""
+        # Create new invoice
+        child_invoice = Invoice.objects.create(
+            customer=self.customer,
+            warehouse=self.warehouse,
+            invoice_type=self.invoice_type,
+            payment_method=self.payment_method,
+            is_returnable=self.is_returnable,
+            main_invoice=self,  # Set this invoice as parent
+            notes=f"Generated from Invoice #{self.id}",
+            created_by=self.created_by,
+            updated_by=self.updated_by
+        )
+        
+        # Copy items based on selection
+        if paid_items_only:
+            # Copy only paid items
+            items_to_copy = self.paid_items
+        else:
+            # Copy all items
+            items_to_copy = self.invoiceitem_set.all()
+        
+        for item in items_to_copy:
+            InvoiceItem.objects.create(
+                invoice=child_invoice,
+                product=item.product,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+                discount_percent=item.discount_percent,
+                total_price=item.total_price,
+                paid_amount=item.paid_amount,
+                remaining_amount=item.remaining_amount,
+                is_paid=item.is_paid,
+                created_by=self.created_by,
+                updated_by=self.updated_by
+            )
+        
+        return child_invoice
+
+    def recalculate_payment_status(self):
+        """Recalculate payment status for all items in this invoice"""
+        for item in self.invoiceitem_set.all():
+            item.remaining_amount = item.total_price - item.paid_amount
+            item.is_paid = item.paid_amount >= item.total_price
+            item.save(update_fields=['remaining_amount', 'is_paid'])
+        
+        # Update payment notes for this invoice
+        self.update_payment_notes()
+    
+    def update_payment_notes(self):
+        """Update notes for all payments of this invoice"""
+        for payment in self.payment_set.all():
+            payment.update_payment_notes()
 
     def __str__(self):
-        return f"Invoice #{self.id} - {self.customer}"
+        return f"Invoice #{self.composite_id} - {self.customer}"
 
 # 🧾 Invoice Items
 class InvoiceItem(AuditModel):
@@ -51,6 +166,45 @@ class InvoiceItem(AuditModel):
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     total_price = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    # Payment tracking fields
+    paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    remaining_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    is_paid = models.BooleanField(default=False)  # Default: not paid
+    
+    # Payment summary fields (for consistency with Payment model)
+    item_total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    item_paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    item_remaining_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    
+    def save(self, *args, **kwargs):
+        # Auto-calculate remaining amount and update paid status
+        self.remaining_amount = self.total_price - self.paid_amount
+        self.is_paid = self.paid_amount >= self.total_price
+        
+        # Update payment summary fields
+        self.item_total_amount = self.total_price
+        self.item_paid_amount = self.paid_amount
+        self.item_remaining_amount = self.remaining_amount
+        
+        super().save(*args, **kwargs)
+    
+    @property
+    def payment_status(self):
+        """Get payment status as percentage"""
+        if self.total_price == 0:
+            return 100
+        return (self.paid_amount / self.total_price) * 100
+    
+    @property
+    def payment_status_display(self):
+        """Get human-readable payment status"""
+        if self.is_paid:
+            return "Paid"
+        elif self.paid_amount > 0:
+            return f"Partially Paid ({self.payment_status:.1f}%)"
+        else:
+            return "Not Paid"
 
     def __str__(self):
         return f"{self.product} x {self.quantity}"
@@ -61,9 +215,70 @@ class Payment(AuditModel):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_date = models.DateField()
     notes = models.TextField(blank=True)
+    
+    # Enhanced payment tracking
+    payment_type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, blank=True, related_name='payment_type')
+    reference_number = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Payment summary fields (stored as columns, not notes)
+    invoice_total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    invoice_paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    invoice_remaining_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    
+    def save(self, *args, **kwargs):
+        # Calculate payment summary before saving
+        self.calculate_payment_summary()
+        
+        # Update invoice item payment status when payment is saved
+        super().save(*args, **kwargs)
+        self.distribute_payment_to_items()
+    
+    def distribute_payment_to_items(self):
+        """Distribute payment amount to unpaid items"""
+        # Get all items that still have remaining amounts to pay
+        invoice_items = self.invoice.invoiceitem_set.filter(remaining_amount__gt=0).order_by('id')
+        remaining_payment = self.amount
+        
+        for item in invoice_items:
+            if remaining_payment <= 0:
+                break
+                
+            # Calculate how much to pay for this item
+            payment_for_item = min(remaining_payment, item.remaining_amount)
+            item.paid_amount += payment_for_item
+            item.save()  # This will auto-update remaining_amount and is_paid
+            
+            remaining_payment -= payment_for_item
+        
+        # Update payment summary fields
+        self.calculate_payment_summary()
+    
+    def calculate_payment_summary(self):
+        """Calculate and store payment summary as columns"""
+        invoice = self.invoice
+        
+        # Get current invoice amounts
+        self.invoice_total_amount = invoice.total_amount
+        self.invoice_paid_amount = invoice.total_paid_amount
+        self.invoice_remaining_amount = invoice.total_remaining_amount
+    
+    def update_payment_notes(self):
+        """Update payment notes to reflect current payment status"""
+        # Create a simple note without duplicating data that's now in columns
+        self.notes = f"Payment of {self.amount:.3f} OMR received on {self.payment_date}"
+    
+    @property
+    def payment_type_display(self):
+        """Get payment type display name"""
+        return self.payment_type.display_name_en if self.payment_type else "Cash"
+    
+    @property
+    def is_partial_payment(self):
+        """Check if this is a partial payment"""
+        return self.amount < self.invoice.total_remaining_amount
 
     def __str__(self):
-        return f"{self.amount} for Invoice #{self.invoice.id}"
+        return f"{self.amount} for Invoice #{self.invoice.composite_id}"
 
 # 🔄 Returns
 class Return(AuditModel):

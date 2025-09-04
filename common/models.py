@@ -16,7 +16,9 @@ class ListType(models.Model):
     )
 
     def __str__(self):
-        return f"{self.name_ar} / {self.name_en}"
+        name_ar = self.name_ar or "No Arabic Name"
+        name_en = self.name_en or "No English Name"
+        return f"{name_ar} / {name_en}"
 
 class ListItem(models.Model):
     list_type = models.ForeignKey(ListType, on_delete=models.CASCADE, related_name='items')
@@ -35,4 +37,6 @@ class ListItem(models.Model):
     )
 
     def __str__(self):
-        return f"{self.display_name_ar} / {self.display_name_en}"
+        name_ar = self.display_name_ar or "No Arabic Name"
+        name_en = self.display_name_en or "No English Name"
+        return f"{name_ar} / {name_en}"

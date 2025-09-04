@@ -123,7 +123,8 @@ class PrintRun(AuditModel):
         ]
 
     def __str__(self):
-        return f"{self.product} — Edition {self.edition_number}"
+        product_name = str(self.product) if self.product else "No Product"
+        return f"{product_name} — Edition {self.edition_number}"
 
 # 🏬 Warehouse
 class Warehouse(AuditModel):
@@ -133,7 +134,9 @@ class Warehouse(AuditModel):
     location = models.CharField(max_length=255)
 
     def __str__(self):
-        return f"{self.name_ar} / {self.name_en}"
+        name_ar = self.name_ar or "No Arabic Name"
+        name_en = self.name_en or "No English Name"
+        return f"{name_ar} / {name_en}"
 
 # 📊 Inventory
 class Inventory(AuditModel):
@@ -149,7 +152,9 @@ class Inventory(AuditModel):
         ]
 
     def __str__(self):
-        return f"{self.product} @ {self.warehouse}"
+        product_name = str(self.product) if self.product else "No Product"
+        warehouse_name = str(self.warehouse) if self.warehouse else "No Warehouse"
+        return f"{product_name} @ {warehouse_name}"
 
 # 🔄 Transfer
 class Transfer(AuditModel):
@@ -161,7 +166,10 @@ class Transfer(AuditModel):
     transfer_date = models.DateTimeField()
 
     def __str__(self):
-        return f"Transfer {self.quantity} of {self.product} from {self.from_warehouse} to {self.to_warehouse}"
+        product_name = str(self.product) if self.product else "No Product"
+        from_warehouse = str(self.from_warehouse) if self.from_warehouse else "No Warehouse"
+        to_warehouse = str(self.to_warehouse) if self.to_warehouse else "No Warehouse"
+        return f"Transfer {self.quantity} of {product_name} from {from_warehouse} to {to_warehouse}"
 
 # Contract
 
@@ -187,7 +195,9 @@ class Contract(AuditModel):
     notes = models.TextField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.title or self.project} - {self.contract_type}"
+        title = self.title or (str(self.project) if self.project else "No Title")
+        contract_type = str(self.contract_type) if self.contract_type else "No Type"
+        return f"{title} - {contract_type}"
 
     
 class PrintTask(AuditModel):
@@ -198,4 +208,6 @@ class PrintTask(AuditModel):
     notes = models.TextField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.task_type} - {self.product}"
+        task_type = str(self.task_type) if self.task_type else "No Task Type"
+        product_name = str(self.product) if self.product else "No Product"
+        return f"{task_type} - {product_name}"

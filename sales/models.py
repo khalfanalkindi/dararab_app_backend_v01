@@ -156,7 +156,9 @@ class Invoice(AuditModel):
             payment.update_payment_notes()
 
     def __str__(self):
-        return f"Invoice #{self.composite_id} - {self.customer}"
+        composite_id = self.composite_id or str(self.id)
+        customer_name = str(self.customer) if self.customer else "No Customer"
+        return f"Invoice #{composite_id} - {customer_name}"
 
 # 🧾 Invoice Items
 class InvoiceItem(AuditModel):
@@ -207,7 +209,8 @@ class InvoiceItem(AuditModel):
             return "Not Paid"
 
     def __str__(self):
-        return f"{self.product} x {self.quantity}"
+        product_name = str(self.product) if self.product else "No Product"
+        return f"{product_name} x {self.quantity}"
 
 # 💵 Payments
 class Payment(AuditModel):
@@ -278,7 +281,8 @@ class Payment(AuditModel):
         return self.amount < self.invoice.total_remaining_amount
 
     def __str__(self):
-        return f"{self.amount} for Invoice #{self.invoice.composite_id}"
+        invoice_id = self.invoice.composite_id if self.invoice and self.invoice.composite_id else "Unknown"
+        return f"{self.amount} for Invoice #{invoice_id}"
 
 # 🔄 Returns
 class Return(AuditModel):
@@ -287,4 +291,5 @@ class Return(AuditModel):
     return_date = models.DateField()
 
     def __str__(self):
-        return f"Returned {self.returned_quantity} of {self.invoice_item}"
+        item_str = str(self.invoice_item) if self.invoice_item else "Unknown Item"
+        return f"Returned {self.returned_quantity} of {item_str}"

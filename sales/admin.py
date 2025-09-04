@@ -72,7 +72,7 @@ class InvoiceAdmin(admin.ModelAdmin):
     #     return form
     
     def total_amount_display(self, obj):
-        return f"${obj.total_amount:.2f}"
+        return format_html("${:.2f}", obj.total_amount)
     total_amount_display.short_description = 'Total Amount'
     
     def payment_status_display(self, obj):

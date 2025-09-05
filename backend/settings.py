@@ -10,16 +10,28 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
-from datetime import timedelta
-import os
+from dotenv import load_dotenv
 from pathlib import Path
+import os
+from datetime import timedelta
 from django.utils.translation import gettext_lazy as _
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env.local if exists
+local_env_path = BASE_DIR / ".env.local"
+if local_env_path.exists():
+    load_dotenv(dotenv_path=local_env_path)
+    print("✅ Loaded .env.local")
+
+# Flag for local environment
+IS_LOCAL = os.getenv("IS_LOCAL", "false").lower() == "true"
 
 
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
+#BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # Quick-start development settings - unsuitable for production
@@ -63,17 +75,21 @@ INSTALLED_APPS = [
     'inventory',
     'sales',
     'common',
-    'django_filters',
     "rest_framework_simplejwt.token_blacklist",
-    'whitenoise.runserver_nostatic',
-]
+    'django_filters',
+] + (['whitenoise.runserver_nostatic'] if not IS_LOCAL else [])
 
 
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
+]
+
+if not IS_LOCAL:
+    MIDDLEWARE.append('whitenoise.middleware.WhiteNoiseMiddleware')
+
+MIDDLEWARE += [
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -109,8 +125,10 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
 # Get the MySQL URL from Railway
-MYSQL_URL = os.getenv('MYSQL_URL')
-
+MYSQL_URL = os.getenv('MYSQL_PUBLIC_URL')
+print('--------------------------------')
+print(MYSQL_URL)
+print('--------------------------------')
 if not MYSQL_URL:
     raise Exception("❌ MYSQL_URL environment variable is missing. Check Railway configuration.")
 
@@ -132,10 +150,10 @@ DATABASES = {
 
 print('--------------------------------')
 
-
+print(MYSQL_URL)
 print(DATABASES)
 print('--------------------------------')
-print("🔍 Using MYSQL_URL for database connection")
+print("🔍 Using Public MYSQL_URL for database connection")
 
 
 
@@ -190,8 +208,8 @@ STATIC_ROOT.mkdir(parents=True, exist_ok=True)
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Simplified static file serving for production
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-
+if not IS_LOCAL:
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
@@ -256,12 +274,12 @@ if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True
 
 # Static files configuration
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-WHITENOISE_USE_FINDERS = True
-WHITENOISE_MANIFEST_STRICT = False
-WHITENOISE_ALLOW_ALL_ORIGINS = True
+# STATIC_URL = '/static/'
+# STATIC_ROOT = BASE_DIR / 'staticfiles'
+# STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+# WHITENOISE_USE_FINDERS = True
+# WHITENOISE_MANIFEST_STRICT = False
+# WHITENOISE_ALLOW_ALL_ORIGINS = True
 
 # Media files configuration
 MEDIA_URL = '/media/'

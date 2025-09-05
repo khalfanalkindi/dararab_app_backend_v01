@@ -61,7 +61,8 @@ class InvoiceAdmin(admin.ModelAdmin):
 
     def composite_id_link(self, obj):
         url = reverse('admin:sales_invoice_change', args=[obj.pk])
-        return format_html('<a href="{}">{}</a>', url, obj.composite_id)
+        composite_id = str(obj.composite_id) if obj.composite_id else str(obj.id)
+        return format_html('<a href="{}">{}</a>', url, composite_id)
     composite_id_link.short_description = 'Composite ID'
     composite_id_link.admin_order_field = 'composite_id'
     
@@ -166,7 +167,8 @@ class InvoiceItemAdmin(admin.ModelAdmin):
     def invoice_link(self, obj):
         if obj.invoice:
             url = reverse('admin:sales_invoice_change', args=[obj.invoice.id])
-            return format_html('<a href="{}">{}</a>', url, obj.invoice.composite_id)
+            composite_id = str(obj.invoice.composite_id) if obj.invoice.composite_id else str(obj.invoice.id)
+            return format_html('<a href="{}">{}</a>', url, composite_id)
         return '-'
     invoice_link.short_description = 'Invoice'
     
@@ -236,7 +238,8 @@ class PaymentAdmin(admin.ModelAdmin):
     def invoice_link(self, obj):
         if obj.invoice:
             url = reverse('admin:sales_invoice_change', args=[obj.invoice.id])
-            return format_html('<a href="{}">{}</a>', url, obj.invoice.composite_id)
+            composite_id = str(obj.invoice.composite_id) if obj.invoice.composite_id else str(obj.invoice.id)
+            return format_html('<a href="{}">{}</a>', url, composite_id)
         return '-'
     invoice_link.short_description = 'Invoice'
     

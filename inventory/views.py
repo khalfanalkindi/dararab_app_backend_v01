@@ -558,7 +558,7 @@ class ProductSummaryView(generics.ListAPIView):
                        latest_price=Subquery(latest.values('price')[:1]),
                        latest_cost=Subquery(latest.values('print_cost')[:1]),
                    )
-                   .select_related('genre','status','author','translator')
+                   .select_related('genre','status','language','author','translator')
                    .order_by('id')       # ← add this
         )
     def get_serializer_context(self):
@@ -579,7 +579,7 @@ class POSProductViewSet(viewsets.ModelViewSet):
                        latest_price=Subquery(latest.values('price')[:1]),
                        latest_cost=Subquery(latest.values('print_cost')[:1]),
                    )
-                   .select_related('genre','status','author','translator')
+                   .select_related('genre','status','language','author','translator')
                    .order_by('id')
         )
         

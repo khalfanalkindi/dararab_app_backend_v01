@@ -18,10 +18,10 @@ class ProductAdmin(admin.ModelAdmin):
     list_display = (
         'id', 'isbn', 'title_ar', 'title_en',
         'project', 'author', 'translator', 'rights_owner', 'reviewer',
-        'status', 'is_direct_product', 'created_by'
+        'status', 'language', 'is_direct_product', 'created_by'
     )
     search_fields = ('isbn', 'title_ar', 'title_en')
-    list_filter   = ('status', 'is_direct_product')
+    list_filter   = ('status', 'language', 'is_direct_product')
 
     fieldsets = (
         ('Basic Information', {
@@ -38,7 +38,7 @@ class ProductAdmin(admin.ModelAdmin):
             'fields': ['is_direct_product'],
         }),
         ('Classification', {
-            'fields': ['genre', 'status'],
+            'fields': ['genre', 'status', 'language'],
         }),
     )
 
@@ -47,6 +47,8 @@ class ProductAdmin(admin.ModelAdmin):
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="product_status")
         elif db_field.name == "genre":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="genre")
+        elif db_field.name == "language":
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="language")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
@@ -102,8 +104,8 @@ class ReviewerAdmin(admin.ModelAdmin):
 # ========== Project ==========
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title_ar', 'approval_status', 'progress_status', 'author', 'translator')
-    list_filter = ('approval_status', 'progress_status')
+    list_display = ('id', 'title_ar', 'approval_status', 'progress_status', 'language', 'author', 'translator')
+    list_filter = ('approval_status', 'progress_status', 'language')
     search_fields = ('title_ar', 'title_original')
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
@@ -113,6 +115,8 @@ class ProjectAdmin(admin.ModelAdmin):
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="progress_status")
         elif db_field.name == "type":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="projects_type")
+        elif db_field.name == "language":
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="language")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 # ========== Contract ==========

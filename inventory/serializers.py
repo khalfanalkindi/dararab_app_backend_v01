@@ -66,6 +66,7 @@ class ProductSerializer(serializers.ModelSerializer):
     reviewer= ReviewerSerializer(read_only=True)
     genre= ListItemSerializer(read_only=True)
     status= ListItemSerializer(read_only=True)
+    language= ListItemSerializer(read_only=True)
 
     # ✅ Writable IDs for creation and update
     project_id= serializers.PrimaryKeyRelatedField(
@@ -103,6 +104,11 @@ class ProductSerializer(serializers.ModelSerializer):
                           source='status',
                           write_only=True,
                           required=True)
+    language_id= serializers.PrimaryKeyRelatedField(
+                          queryset=ListItem.objects.all(),
+                          source='language',
+                          write_only=True,
+                          required=False)
 
     class Meta:
         model = Product
@@ -116,11 +122,11 @@ class ProductSerializer(serializers.ModelSerializer):
 
             # Nested output
             "project", "author", "translator", "rights_owner", "reviewer",
-            "genre", "status",
+            "genre", "status", "language",
 
             # Writable IDs
             "project_id", "author_id", "translator_id", "rights_owner_id", "reviewer_id",
-            "genre_id", "status_id",
+            "genre_id", "status_id", "language_id",
 
             "is_direct_product",
             "created_by",
@@ -201,6 +207,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     progress_status = ListItemSerializer(read_only=True)
     status = ListItemSerializer(read_only=True)
     type = ListItemSerializer(read_only=True)
+    language = ListItemSerializer(read_only=True)
 
     # ✅ Writable IDs for creation and update
     author_id = serializers.PrimaryKeyRelatedField(
@@ -224,6 +231,9 @@ class ProjectSerializer(serializers.ModelSerializer):
     type_id = serializers.PrimaryKeyRelatedField(
         queryset=ListItem.objects.all(), source='type', write_only=True, required=False
     )
+    language_id = serializers.PrimaryKeyRelatedField(
+        queryset=ListItem.objects.all(), source='language', write_only=True, required=False
+    )
 
     class Meta:
         model = Project
@@ -241,11 +251,11 @@ class ProjectSerializer(serializers.ModelSerializer):
 
             # Nested output
             "author", "translator", "rights_owner", "reviewer",
-            "progress_status", "status", "type",
+            "progress_status", "status", "type", "language",
 
             # Writable IDs
             "author_id", "translator_id", "rights_owner_id", "reviewer_id",
-            "progress_status_id", "status_id", "type_id",
+            "progress_status_id", "status_id", "type_id", "language_id",
         ]
         read_only_fields = ["created_by", "updated_by", "created_at", "updated_at"]
 
@@ -439,8 +449,10 @@ class PrintTaskSerializer(serializers.ModelSerializer):
 class ProductSummarySerializer(serializers.ModelSerializer):
     genre_id      = serializers.IntegerField()    # new
     status_id     = serializers.IntegerField()  # new
+    language_id   = serializers.IntegerField()  # new
     genre_name    = serializers.CharField(source='genre.display_name_en')
     status_name   = serializers.CharField(source='status.display_name_en')
+    language_name = serializers.CharField(source='language.display_name_en', default=None)
     author_name     = serializers.CharField(source='author.name',    default=None)
     translator_name = serializers.CharField(source='translator.name', default=None)
     editions_count = serializers.IntegerField()
@@ -453,8 +465,8 @@ class ProductSummarySerializer(serializers.ModelSerializer):
         model  = Product
         fields = [
             'id', 'title_ar', 'title_en', 'isbn',
-            'genre_id','status_id',
-            'genre_name', 'status_name',
+            'genre_id','status_id', 'language_id',
+            'genre_name', 'status_name', 'language_name',
             'author_name', 'translator_name',
             'editions_count', 'stock',
             'latest_price', 'latest_cost', "cover_design_url"

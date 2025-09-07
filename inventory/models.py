@@ -4,9 +4,49 @@ from common.models import ListItem
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError
+import os
 
 
 User = get_user_model()
+
+# Custom field for cover design that supports both file upload and URL
+class CoverDesignField(models.TextField):
+    """
+    Custom field that can store either a file path (for uploaded files) 
+    or a URL (for external links)
+    """
+    description = "Cover design field that accepts file uploads or URLs"
+    
+    def __init__(self, *args, **kwargs):
+        # Remove upload_to from kwargs as we'll handle it manually
+        self.upload_to = kwargs.pop('upload_to', 'book_covers/')
+        super().__init__(*args, **kwargs)
+    
+    def validate(self, value, model_instance):
+        super().validate(value, model_instance)
+        
+        if value:
+            # Check if it's a URL
+            url_validator = URLValidator()
+            try:
+                url_validator(value)
+                # It's a valid URL, no further validation needed
+                return
+            except ValidationError:
+                # Not a URL, check if it's a valid file path
+                if not os.path.isfile(value):
+                    # Check if it's a relative path that would be valid in media
+                    if not value.startswith(self.upload_to):
+                        raise ValidationError(
+                            f"Invalid cover design: must be a valid URL or file path starting with '{self.upload_to}'"
+                        )
+    
+    def deconstruct(self):
+        name, path, args, kwargs = super().deconstruct()
+        kwargs['upload_to'] = self.upload_to
+        return name, path, args, kwargs
 
 # 🔁 Mixin for audit fields
 class AuditModel(models.Model):
@@ -95,7 +135,7 @@ class Product(AuditModel):
     isbn= models.CharField(max_length=100)
     title_ar= models.CharField(max_length=255, verbose_name="Book Title (Arabic)")
     title_en= models.CharField(max_length=255, verbose_name="Book Title (English)")
-    cover_design= models.ImageField(upload_to='book_covers/', null=True, blank=True)
+    cover_design= CoverDesignField(upload_to='book_covers/', null=True, blank=True)
     genre= models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='genre')
     status= models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='product_status')
     language= models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, blank=True, related_name='product_language')

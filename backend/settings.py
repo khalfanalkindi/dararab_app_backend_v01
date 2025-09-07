@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'django_filters',
     "rest_framework_simplejwt.token_blacklist",
     'whitenoise.runserver_nostatic',
+    "csp",
 ]
 
 
@@ -75,6 +76,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'csp.middleware.CSPMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -270,3 +272,19 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # Create directories if they don't exist
 STATIC_ROOT.mkdir(parents=True, exist_ok=True)
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+# Content Security Policy settings (django-csp 4.0+)
+CONTENT_SECURITY_POLICY = {
+    'DIRECTIVES': {
+        'connect-src': ("'self'",),
+        'default-src': ("'self'",),
+        'font-src': ("'self'", 'https://fonts.gstatic.com'),
+        'frame-src': ("'none'",),
+        'img-src': ("'self'", 'data:', 'https://dararab.co.uk', 'https://www.dararab.co.uk'),
+        'media-src': ("'self'",),
+        'object-src': ("'none'",),
+        'script-src': ("'self'", "'unsafe-inline'", "'unsafe-eval'"),
+        'style-src': ("'self'", "'unsafe-inline'", 'https://fonts.googleapis.com')
+    }
+}

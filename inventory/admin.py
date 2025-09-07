@@ -1,9 +1,46 @@
 from django.contrib import admin
+from django import forms
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError
 from .models import (
     Author, PrintRun, PrintTask, Stakeholder, Translator, RightsOwner, Reviewer,
     Project, Contract, Product, Warehouse, Inventory, Transfer
 )
 from common.models import ListItem
+
+
+class CoverDesignFormField(forms.CharField):
+    """
+    Custom form field for cover design that accepts both file uploads and URLs
+    """
+    widget = forms.TextInput(attrs={'placeholder': 'Enter URL or upload file'})
+    
+    def clean(self, value):
+        value = super().clean(value)
+        if not value:
+            return value
+            
+        # Check if it's a URL
+        url_validator = URLValidator()
+        try:
+            url_validator(value)
+            return value
+        except ValidationError:
+            # Check if it's a valid file path
+            if value.startswith('book_covers/'):
+                return value
+            else:
+                raise ValidationError(
+                    "Cover design must be a valid URL or file path starting with 'book_covers/'"
+                )
+
+
+class ProductAdminForm(forms.ModelForm):
+    cover_design = CoverDesignFormField(required=False, help_text="Enter a URL or upload a file")
+    
+    class Meta:
+        model = Product
+        fields = '__all__'
 
 
 # ========== Product & PrintRun ==========  
@@ -13,12 +50,13 @@ class PrintRunInline(admin.TabularInline):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
+    form = ProductAdminForm
     inlines = [PrintRunInline]
 
     list_display = (
         'id', 'isbn', 'title_ar', 'title_en',
         'project', 'author', 'translator', 'rights_owner', 'reviewer',
-        'status', 'language', 'is_direct_product', 'created_by'
+        'status', 'language', 'cover_design_display', 'is_direct_product', 'created_by'
     )
     search_fields = ('isbn', 'title_ar', 'title_en')
     list_filter   = ('status', 'language', 'is_direct_product')
@@ -50,6 +88,23 @@ class ProductAdmin(admin.ModelAdmin):
         elif db_field.name == "language":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="language")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
+    
+    def cover_design_display(self, obj):
+        if not obj.cover_design:
+            return "No cover"
+        
+        # Check if it's a URL
+        url_validator = URLValidator()
+        try:
+            url_validator(obj.cover_design)
+            # It's a URL, show as link
+            return f'<a href="{obj.cover_design}" target="_blank">External Link</a>'
+        except ValidationError:
+            # It's a file path, show as file
+            return f'<a href="/media/{obj.cover_design}" target="_blank">Uploaded File</a>'
+    
+    cover_design_display.allow_tags = True
+    cover_design_display.short_description = "Cover Design"
 
 
 @admin.register(PrintRun)

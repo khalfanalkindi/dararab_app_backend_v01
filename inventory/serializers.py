@@ -1,4 +1,7 @@
 from rest_framework import serializers
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError
+import os
 
 from users.serializers import User, UserBasicSerializer
 from .models import (PrintRun, PrintTask, Product, Stakeholder, Warehouse, Inventory, Transfer,
@@ -9,6 +12,68 @@ from common.models import ListItem
 from common.serializers import ListItemSerializer
 from django.contrib.contenttypes.models import ContentType
 
+
+class CoverDesignSerializerField(serializers.Field):
+    """
+    Custom serializer field that handles both file uploads and URLs for cover design
+    """
+    
+    def to_representation(self, value):
+        if not value:
+            return None
+        
+        # If it's a URL, return as is
+        url_validator = URLValidator()
+        try:
+            url_validator(value)
+            return value
+        except ValidationError:
+            # It's a file path, return the full URL
+            request = self.context.get('request')
+            if request and hasattr(request, 'build_absolute_uri'):
+                return request.build_absolute_uri(value)
+            return value
+    
+    def to_internal_value(self, data):
+        if not data:
+            return None
+        
+        # If it's a file object, handle the upload
+        if hasattr(data, 'read'):
+            # This is a file upload
+            from django.core.files.storage import default_storage
+            from django.core.files.base import ContentFile
+            
+            # Generate a unique filename
+            import uuid
+            file_extension = os.path.splitext(data.name)[1]
+            filename = f"{uuid.uuid4()}{file_extension}"
+            file_path = f"book_covers/{filename}"
+            
+            # Save the file
+            file_content = ContentFile(data.read())
+            saved_path = default_storage.save(file_path, file_content)
+            return saved_path
+        
+        # If it's a string, validate if it's a URL or file path
+        if isinstance(data, str):
+            url_validator = URLValidator()
+            try:
+                url_validator(data)
+                # It's a valid URL
+                return data
+            except ValidationError:
+                # Check if it's a valid file path
+                if data.startswith('book_covers/'):
+                    return data
+                else:
+                    raise serializers.ValidationError(
+                        "Cover design must be a valid URL or file upload"
+                    )
+        
+        raise serializers.ValidationError(
+            "Cover design must be a valid URL or file upload"
+        )
 
 
 class WarehouseSerializer(serializers.ModelSerializer):
@@ -67,6 +132,9 @@ class ProductSerializer(serializers.ModelSerializer):
     genre= ListItemSerializer(read_only=True)
     status= ListItemSerializer(read_only=True)
     language= ListItemSerializer(read_only=True)
+    
+    # Custom field for cover design
+    cover_design = CoverDesignSerializerField()
 
     # ✅ Writable IDs for creation and update
     project_id= serializers.PrimaryKeyRelatedField(
@@ -471,11 +539,24 @@ class ProductSummarySerializer(serializers.ModelSerializer):
             'editions_count', 'stock',
             'latest_price', 'latest_cost', "cover_design_url"
         ]
+    
     def get_cover_design_url(self, obj):
+        if not obj.cover_design:
+            return None
+            
         request = self.context.get("request")
-        if obj.cover_design and hasattr(obj.cover_design, "url"):
-            return request.build_absolute_uri(obj.cover_design.url)
-        return None
+        
+        # Check if it's a URL
+        url_validator = URLValidator()
+        try:
+            url_validator(obj.cover_design)
+            # It's already a URL, return as is
+            return obj.cover_design
+        except ValidationError:
+            # It's a file path, build the full URL
+            if request and hasattr(request, 'build_absolute_uri'):
+                return request.build_absolute_uri(obj.cover_design)
+            return obj.cover_design
 
 class POSProductSummarySerializer(ProductSummarySerializer):
     warehouse_stock = serializers.SerializerMethodField()

@@ -4,6 +4,10 @@ from django_filters import rest_framework as filters
 from common.models import ListItem
 from inventory.models import Warehouse
 from .models import Customer, Invoice, InvoiceItem, Payment, Return
+from django.db.models import Sum
+from decimal import Decimal
+
+
 
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
@@ -74,22 +78,22 @@ class InvoiceSerializer(serializers.ModelSerializer):
         return obj.composite_id
     
     def get_total_amount(self, obj):
-        return obj.total_amount
+        return float(obj.total_amount)
     
     def get_total_paid_amount(self, obj):
-        return obj.total_paid_amount
-    
+        return float(obj.total_paid_amount)
+
     def get_total_remaining_amount(self, obj):
-        return obj.total_remaining_amount
+        return float(obj.total_remaining_amount)
     
     def get_payment_status(self, obj):
-        return obj.payment_status
+        return float(obj.payment_status)
     
     def get_is_fully_paid(self, obj):
-        return obj.is_fully_paid
+        return bool(obj.is_fully_paid)
     
     def get_has_partial_payments(self, obj):
-        return obj.has_partial_payments
+        return bool(obj.has_partial_payments)
     
     def get_invoice_type_display(self, obj):
         """Enhanced invoice type display with sub-invoice indicator"""
@@ -244,6 +248,20 @@ class PaymentSerializer(serializers.ModelSerializer):
             'invoice_total_amount', 'invoice_paid_amount', 'invoice_remaining_amount'
         ]
     
+    def create(self, validated_data):
+        # Apply discount if payment amount equals original amount
+        invoice = validated_data['invoice']
+        payment_amount = validated_data['amount']
+        
+        # If payment amount equals the original amount, apply the discount
+        if payment_amount == invoice.subtotal_amount and invoice.global_discount_percent > 0:
+            # Calculate discounted amount
+            discount_amount = (invoice.subtotal_amount * invoice.global_discount_percent) / Decimal('100')
+            discounted_amount = invoice.subtotal_amount - discount_amount
+            validated_data['amount'] = discounted_amount
+        
+        return super().create(validated_data)
+    
     def get_payment_type_display(self, obj):
         return obj.payment_type_display
     
@@ -295,6 +313,8 @@ class InvoiceSummarySerializer(serializers.ModelSerializer):
             'total_amount',
             'total_paid',
             'remaining_amount',
+            'global_discount_percent',
+            'tax_percent',
             'notes',
             'created_at_formatted',
             'created_by',
@@ -320,22 +340,36 @@ class InvoiceSummarySerializer(serializers.ModelSerializer):
         items = []
         for item in obj.invoiceitem_set.all():
             items.append({
-                'product_name': item.product.title_ar,
-                'quantity': item.quantity,
-                'unit_price': item.unit_price,
-                'discount_percent': item.discount_percent,
-                'total_price': item.total_price
+                'product_name': getattr(item.product, 'title_ar', 'Unknown') if item.product else 'Unknown',
+                'quantity': int(item.quantity),
+                'unit_price': float(item.unit_price),
+                'discount_percent': float(item.discount_percent),
+                'total_price': float(item.total_price),
             })
         return items
 
     def get_total_amount(self, obj):
-        return sum(item.total_price for item in obj.invoiceitem_set.all())
+        # Original total (before global discount & tax) - the full amount owed
+        return float(obj.subtotal_amount)
 
     def get_total_paid(self, obj):
-        return sum(payment.amount for payment in obj.payment_set.all())
+        # Return the actual payment amount received (after discount)
+        # This should be the sum of payment amounts, not the invoice total
+        paid = obj.payment_set.aggregate(s=Sum('amount'))['s'] or Decimal('0.00')
+        return float(paid)
 
     def get_remaining_amount(self, obj):
-        return self.get_total_amount(obj) - self.get_total_paid(obj)
+        # Use the stored payment summary for consistency
+        # Get the most recent payment's invoice_remaining_amount
+        latest_payment = obj.payment_set.order_by('-created_at').first()
+        if latest_payment and latest_payment.invoice_remaining_amount is not None:
+            return float(latest_payment.invoice_remaining_amount)
+        # Fallback to direct calculation if no payment records exist
+        paid = obj.payment_set.aggregate(s=Sum('amount'))['s'] or Decimal('0.00')
+        rem = Decimal(str(obj.total_amount)) - paid
+        if rem < 0:
+            rem = Decimal('0.00')
+        return float(rem)
 
     def get_created_at_formatted(self, obj):
         return obj.created_at.strftime("%Y-%m-%d %H:%M:%S")

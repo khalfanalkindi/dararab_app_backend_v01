@@ -1,7 +1,10 @@
 from django.db import models
+from django.db.models import Sum
 from django.conf import settings
 from inventory.models import Product, Warehouse
 from common.models import ListItem
+from decimal import Decimal
+
 
 # 🔁 Mixin for audit fields
 class AuditModel(models.Model):
@@ -39,6 +42,9 @@ class Invoice(AuditModel):
     is_returnable = models.BooleanField(default=True)
     main_invoice = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True)
     notes = models.TextField(blank=True)
+    global_discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0.00'))
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0.00'))
+
     
     # Composite ID for display and search
     composite_id = models.CharField(max_length=50, null=True, blank=True, unique=True)
@@ -57,47 +63,66 @@ class Invoice(AuditModel):
                 self.composite_id = str(self.id)
             super().save(update_fields=['composite_id'])
 
-    
     @property
-    def total_amount(self):
-        """Get total invoice amount"""
-        return sum(item.total_price for item in self.invoiceitem_set.all())
-    
+    def subtotal_amount(self) -> Decimal:
+        return sum((item.total_price for item in self.invoiceitem_set.all()), Decimal('0.00'))
+        
+
     @property
-    def total_paid_amount(self):
-        """Get total paid amount"""
-        return sum(item.paid_amount for item in self.invoiceitem_set.all())
-    
+    def global_discount_amount(self) -> Decimal:
+        return (self.subtotal_amount * (self.global_discount_percent or Decimal('0'))) / Decimal('100')
+
     @property
-    def total_remaining_amount(self):
-        """Get total remaining amount"""
-        return sum(item.remaining_amount for item in self.invoiceitem_set.all())
-    
+    def discounted_subtotal(self) -> Decimal:
+        return self.subtotal_amount - self.global_discount_amount
+
     @property
-    def payment_status(self):
-        """Get overall payment status"""
+    def tax_amount(self) -> Decimal:
+        return (self.discounted_subtotal * (self.tax_percent or Decimal('0'))) / Decimal('100')
+
+    @property
+    def grand_total(self) -> Decimal:
+        # Grand total = discounted subtotal + tax
+        return (self.discounted_subtotal + self.tax_amount)
+
+    @property
+    def total_amount(self) -> Decimal:
+        """Grand total after global discount and tax (backwards-compatible name)."""
+        return (self.discounted_subtotal + self.tax_amount).quantize(Decimal('0.01'))
+
+    @property
+    def total_paid_amount(self) -> Decimal:
+        """Sum of per-item paid amounts as stored on items."""
+        return sum((item.paid_amount for item in self.invoiceitem_set.all()), Decimal('0.00')).quantize(Decimal('0.01'))
+
+    @property
+    def total_remaining_amount(self) -> Decimal:
+        """Invoice-level remaining = grand total - sum of item paid."""
+        rem = self.total_amount - self.total_paid_amount
+        return rem if rem > 0 else Decimal('0.00')
+
+    @property
+    def payment_status(self) -> float:
+        """Percent paid of the grand total."""
         if self.total_amount == 0:
-            return 100
-        return (self.total_paid_amount / self.total_amount) * 100
-    
+            return 100.0
+        return float((self.total_paid_amount / self.total_amount) * 100)
+
     @property
-    def is_fully_paid(self):
-        """Check if invoice is fully paid"""
-        return self.total_paid_amount >= self.total_amount
-    
+    def is_fully_paid(self) -> bool:
+        """Treat as fully paid if within 0.001 OMR to tolerate rounding."""
+        return (self.total_paid_amount + Decimal('0.001')) >= self.total_amount
+
     @property
-    def has_partial_payments(self):
-        """Check if invoice has partial payments"""
+    def has_partial_payments(self) -> bool:
         return self.total_paid_amount > 0 and not self.is_fully_paid
-    
+
     @property
     def unpaid_items(self):
-        """Get unpaid items"""
         return self.invoiceitem_set.filter(is_paid=False)
-    
+
     @property
     def paid_items(self):
-        """Get paid items"""
         return self.invoiceitem_set.filter(is_paid=True)
     
     def generate_child_invoice(self, paid_items_only=True):
@@ -229,41 +254,111 @@ class Payment(AuditModel):
     invoice_remaining_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     
     def save(self, *args, **kwargs):
-        # Calculate payment summary before saving
-        self.calculate_payment_summary()
-        
-        # Update invoice item payment status when payment is saved
         super().save(*args, **kwargs)
-        self.distribute_payment_to_items()
+
+        # Recompute using our summary function
+        self.calculate_payment_summary()
+
+        def q2(x):
+            if isinstance(x, Decimal):
+                return x.quantize(Decimal("0.01"))
+            if isinstance(x, (int, float)):
+                return Decimal(str(x)).quantize(Decimal("0.01"))
+            return Decimal("0.00")
+
+        # IMPORTANT: write the values we just calculated (self.invoice_*_amount), not invoice.* props
+        Payment.objects.filter(pk=self.pk).update(
+            invoice_total_amount=q2(self.invoice_total_amount),
+            invoice_paid_amount=q2(self.invoice_paid_amount),
+            invoice_remaining_amount=q2(self.invoice_remaining_amount),
+            notes=f"Payment of {float(self.amount):.3f} OMR received on {self.payment_date}"
+        )
+    # def save(self, *args, **kwargs):
+    #     """
+    #     Option A (ledger-only):
+    #     - Do NOT mutate invoice items here.
+    #     - Save the payment row.
+    #     - Recompute and persist summary fields from the invoice items.
+    #     """
+    #     # 1) Save the payment record (ledger)
+    #     super().save(*args, **kwargs)
+
+    #     # 2) Recompute summary fields based on current invoice items
+    #     self.calculate_payment_summary()
+
+    #     # 3) Persist summary fields WITHOUT calling save() again
+    #     def q2(x):
+    #         if isinstance(x, Decimal):
+    #             return x.quantize(Decimal("0.01"))
+    #         if isinstance(x, (int, float)):
+    #             return Decimal(str(x)).quantize(Decimal("0.01"))
+    #         return Decimal("0.00")
+
+    #     Payment.objects.filter(pk=self.pk).update(
+    #         invoice_total_amount=q2(self.invoice_total_amount),
+    #         invoice_paid_amount=q2(self.invoice_paid_amount),
+    #         invoice_remaining_amount=q2(self.invoice_remaining_amount),
+    #         notes=f"Payment of {float(self.amount):.3f} OMR received on {self.payment_date}"
+    #     )
     
     def distribute_payment_to_items(self):
         """Distribute payment amount to unpaid items"""
-        # Get all items that still have remaining amounts to pay
-        invoice_items = self.invoice.invoiceitem_set.filter(remaining_amount__gt=0).order_by('id')
-        remaining_payment = self.amount
+        """
+        DEPRECATED in Option A flow.
+        Kept for legacy/manual use but NOT called from save().
+        """
+        return
+        # # Get all items that still have remaining amounts to pay
+        # invoice_items = self.invoice.invoiceitem_set.filter(remaining_amount__gt=0).order_by('id')
+        # remaining_payment = self.amount
         
-        for item in invoice_items:
-            if remaining_payment <= 0:
-                break
+        # for item in invoice_items:
+        #     if remaining_payment <= 0:
+        #         break
                 
-            # Calculate how much to pay for this item
-            payment_for_item = min(remaining_payment, item.remaining_amount)
-            item.paid_amount += payment_for_item
-            item.save()  # This will auto-update remaining_amount and is_paid
+        #     # Calculate how much to pay for this item
+        #     payment_for_item = min(remaining_payment, item.remaining_amount)
+        #     item.paid_amount += payment_for_item
+        #     item.save()  # This will auto-update remaining_amount and is_paid
             
-            remaining_payment -= payment_for_item
+        #     remaining_payment -= payment_for_item
         
-        # Update payment summary fields
-        self.calculate_payment_summary()
+        # # Update payment summary fields
+        # self.calculate_payment_summary()
     
     def calculate_payment_summary(self):
-        """Calculate and store payment summary as columns"""
-        invoice = self.invoice
+        """
+        For the Payments *ledger*:
+        - invoice_total_amount = original total (before global discount & tax) - the full amount owed
+        - invoice_paid_amount  = sum of ALL payment amounts recorded for this invoice (actual money received)
+        - invoice_remaining_amount = original total - money received
+        """
+        inv = self.invoice
+
+        # Original total: before global discount and tax (the full amount owed)
+        original_total = inv.subtotal_amount  # This is the gross total before discount
+
+        # Money received: sum of all payments (ledger truth)
+        paid = inv.payment_set.aggregate(s=Sum('amount'))['s'] or Decimal('0.00')
+
+        remaining = original_total - paid
+        if remaining < 0:
+            remaining = Decimal('0.00')
+
+        # Store on the instance so save() can write them
+        self.invoice_total_amount = original_total
+        self.invoice_paid_amount = paid
+        self.invoice_remaining_amount = remaining
+    
+    # def calculate_payment_summary(self):
+    #     """Calculate and store payment summary as columns"""
+    #     invoice = self.invoice
         
-        # Get current invoice amounts
-        self.invoice_total_amount = invoice.total_amount
-        self.invoice_paid_amount = invoice.total_paid_amount
-        self.invoice_remaining_amount = invoice.total_remaining_amount
+    #     # Get current invoice amounts
+    #     self.invoice_total_amount = invoice.total_amount
+    #     self.invoice_paid_amount = invoice.total_paid_amount
+    #     self.invoice_remaining_amount = invoice.total_remaining_amount
+        
     
     def update_payment_notes(self):
         """Update payment notes to reflect current payment status"""

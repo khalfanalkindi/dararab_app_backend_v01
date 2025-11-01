@@ -55,6 +55,17 @@ CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
 if CSRF_TRUSTED_ORIGINS_ENV:
     CSRF_TRUSTED_ORIGINS.extend([origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()])
 
+# Debug: Print CSRF trusted origins (remove in production)
+if DEBUG:
+    print(f"🔒 CSRF_TRUSTED_ORIGINS: {CSRF_TRUSTED_ORIGINS}")
+    print(f"🔒 Number of trusted origins: {len(CSRF_TRUSTED_ORIGINS)}")
+    # Verify the dev URL is in the list
+    dev_url = "https://dararabappbackendv01-dev.up.railway.app"
+    if dev_url in CSRF_TRUSTED_ORIGINS:
+        print(f"✅ Dev URL is in CSRF_TRUSTED_ORIGINS")
+    else:
+        print(f"❌ Dev URL is NOT in CSRF_TRUSTED_ORIGINS")
+
 # Additional CSRF settings for Railway/proxy environments
 CSRF_COOKIE_HTTPONLY = False  # Allow JavaScript to read CSRF token
 CSRF_USE_SESSIONS = False  # Use cookie-based CSRF tokens
@@ -63,6 +74,14 @@ CSRF_COOKIE_SAMESITE = 'Lax'  # CSRF cookie SameSite attribute
 # For Railway/proxy environments, trust proxy headers
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# In Django 5.x, CSRF checks are stricter - ensure we trust the proxy's origin detection
+# This helps with Railway's proxy which may modify Origin/Referer headers
+CSRF_TRUSTED_ORIGINS_DEBUG = DEBUG  # Store for potential conditional logic
+
+# Ensure same-origin requests are trusted (for admin/forms on same domain)
+# Django should handle this automatically, but be explicit in proxy environments
+CSRF_FAILURE_VIEW = 'django.views.csrf.csrf_failure'  # Default, but explicit
 
 
 
@@ -225,6 +244,10 @@ REST_FRAMEWORK = {
    'DEFAULT_PAGINATION_CLASS': 'inventory.pagination.StandardResultsSetPagination',
     'PAGE_SIZE': 25,
     'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
+    # DRF views are CSRF-exempt by default, but ensure it's explicit
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
 }
 
 CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security

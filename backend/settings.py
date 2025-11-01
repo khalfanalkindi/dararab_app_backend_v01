@@ -55,17 +55,6 @@ CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
 if CSRF_TRUSTED_ORIGINS_ENV:
     CSRF_TRUSTED_ORIGINS.extend([origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()])
 
-# Debug: Print CSRF trusted origins (remove in production)
-if DEBUG:
-    print(f"🔒 CSRF_TRUSTED_ORIGINS: {CSRF_TRUSTED_ORIGINS}")
-    print(f"🔒 Number of trusted origins: {len(CSRF_TRUSTED_ORIGINS)}")
-    # Verify the dev URL is in the list
-    dev_url = "https://dararabappbackendv01-dev.up.railway.app"
-    if dev_url in CSRF_TRUSTED_ORIGINS:
-        print(f"✅ Dev URL is in CSRF_TRUSTED_ORIGINS")
-    else:
-        print(f"❌ Dev URL is NOT in CSRF_TRUSTED_ORIGINS")
-
 # Additional CSRF settings for Railway/proxy environments
 CSRF_COOKIE_HTTPONLY = False  # Allow JavaScript to read CSRF token
 CSRF_USE_SESSIONS = False  # Use cookie-based CSRF tokens

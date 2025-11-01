@@ -48,6 +48,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:8000",  # Local Django dev server
     "http://127.0.0.1:8000",  # Local Django dev server
     "https://dararabappfrontendv01-production.up.railway.app",
+    "https://dararabappfrontendv01-dev.up.railway.app",
 ]
 
 # Add any additional origins from environment variable
@@ -244,6 +245,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # ✅ Next.js Frontend
     "http://127.0.0.1:3000",  # ✅ Alternative Localhost
     "https://dararabappfrontendv01-production.up.railway.app",
+    "https://dararabappfrontendv01-dev.up.railway.app",
 ]
 
 

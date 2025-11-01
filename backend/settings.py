@@ -33,18 +33,36 @@ DEBUG = True
 
 ALLOWED_HOSTS = [
     "dararabappbackendv01-production.up.railway.app",
+    "dararabappbackendv01-dev.up.railway.app",
     "127.0.0.1",
     "localhost",
     ".railway.app",  # Allow all Railway subdomains
 ]
 
+# CSRF trusted origins - must include all origins that make POST requests
 CSRF_TRUSTED_ORIGINS = [
     "https://dararabappbackendv01-production.up.railway.app",
     "https://dararabappbackendv01-dev.up.railway.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:8000",  # Local Django dev server
+    "http://127.0.0.1:8000",  # Local Django dev server
     "https://dararabappfrontendv01-production.up.railway.app",
 ]
+
+# Add any additional origins from environment variable
+CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
+if CSRF_TRUSTED_ORIGINS_ENV:
+    CSRF_TRUSTED_ORIGINS.extend([origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()])
+
+# Additional CSRF settings for Railway/proxy environments
+CSRF_COOKIE_HTTPONLY = False  # Allow JavaScript to read CSRF token
+CSRF_USE_SESSIONS = False  # Use cookie-based CSRF tokens
+CSRF_COOKIE_SAMESITE = 'Lax'  # CSRF cookie SameSite attribute
+
+# For Railway/proxy environments, trust proxy headers
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
 

@@ -14,12 +14,26 @@ from datetime import timedelta
 import os
 from pathlib import Path
 from django.utils.translation import gettext_lazy as _
+from dotenv import load_dotenv
+import dj_database_url
 
 
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from a local .env file when present
+# First pass does NOT override real environment variables
+load_dotenv(BASE_DIR / ".env", override=False)
+
+# Standardize environment selection: local | dev | production
+ENVIRONMENT = os.getenv('ENVIRONMENT', 'local').lower()
+
+# In local env, allow .env to override any pre-set shell/host vars to avoid
+# accidentally using Railway's internal MYSQL_* values from the shell
+if ENVIRONMENT == 'local':
+    load_dotenv(BASE_DIR / ".env", override=True)
 
 
 # Quick-start development settings - unsuitable for production
@@ -29,7 +43,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-z06k@8=g!c)sw7dc)-#f21djg(@t13sodr_ka8=zxb@!6igjwu'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+_debug_env = os.getenv('DEBUG')
+if _debug_env is not None:
+    DEBUG = _debug_env.lower() in ('1', 'true', 'yes', 'on')
+else:
+    DEBUG = ENVIRONMENT != 'production'
 
 ALLOWED_HOSTS = [
     "dararabappbackendv01-production.up.railway.app",
@@ -38,6 +56,10 @@ ALLOWED_HOSTS = [
     "localhost",
     ".railway.app",  # Allow all Railway subdomains
 ]
+# Extend allowed hosts from env (comma separated)
+ALLOWED_HOSTS_ENV = os.getenv('ALLOWED_HOSTS', '')
+if ALLOWED_HOSTS_ENV:
+    ALLOWED_HOSTS.extend([h.strip() for h in ALLOWED_HOSTS_ENV.split(',') if h.strip()])
 
 # CSRF trusted origins - must include all origins that make POST requests
 CSRF_TRUSTED_ORIGINS = [
@@ -61,9 +83,9 @@ CSRF_COOKIE_HTTPONLY = False  # Allow JavaScript to read CSRF token
 CSRF_USE_SESSIONS = False  # Use cookie-based CSRF tokens
 CSRF_COOKIE_SAMESITE = 'Lax'  # CSRF cookie SameSite attribute
 
-# For Railway/proxy environments, trust proxy headers
-USE_X_FORWARDED_HOST = True
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# For Railway/proxy environments, trust proxy headers (keep enabled outside local)
+USE_X_FORWARDED_HOST = ENVIRONMENT != 'local'
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if ENVIRONMENT != 'local' else None
 
 # In Django 5.x, CSRF checks are stricter - ensure we trust the proxy's origin detection
 # This helps with Railway's proxy which may modify Origin/Referer headers
@@ -138,34 +160,52 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-# Get the MySQL URL from Railway
+# Database configuration
+# Prefer MYSQL_PUBLIC_URL for local; otherwise MYSQL_URL. In local, fallback to SQLite if none.
+MYSQL_PUBLIC_URL = os.getenv('MYSQL_PUBLIC_URL')
 MYSQL_URL = os.getenv('MYSQL_URL')
 
-if not MYSQL_URL:
-    raise Exception("❌ MYSQL_URL environment variable is missing. Check Railway configuration.")
+selected_db_url = None
+if ENVIRONMENT == 'local':
+    # Prefer public proxy URL in local environment
+    selected_db_url = MYSQL_PUBLIC_URL or MYSQL_URL
+else:
+    selected_db_url = MYSQL_URL
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': MYSQL_URL.split('/')[-1],
-        'USER': MYSQL_URL.split('://')[1].split(':')[0],
-        'PASSWORD': MYSQL_URL.split(':')[2].split('@')[0],
-        'HOST': MYSQL_URL.split('@')[1].split(':')[0],
-        'PORT': MYSQL_URL.split(':')[-1].split('/')[0],
-        'OPTIONS': {
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            'charset': 'utf8mb4',
-            'use_unicode': True,
-        }
+if selected_db_url:
+    DATABASES = {
+        'default': dj_database_url.parse(selected_db_url, conn_max_age=600)
     }
-}
+    # Ensure MySQL options when using MySQL
+    if DATABASES['default']['ENGINE'].endswith('mysql'):
+        DATABASES['default'].setdefault('OPTIONS', {})
+        DATABASES['default']['OPTIONS'].setdefault('init_command', "SET sql_mode='STRICT_TRANS_TABLES'")
+        DATABASES['default']['OPTIONS'].setdefault('charset', 'utf8mb4')
+    # Guard: in local env, don't allow internal host
+    if ENVIRONMENT == 'local':
+        host = DATABASES['default'].get('HOST')
+        if host and host.endswith('.railway.internal'):
+            raise Exception("❌ Detected internal Railway host in local env. Use MYSQL_PUBLIC_URL (gondola.proxy.rlwy.net:PORT).")
+else:
+    if ENVIRONMENT == 'local':
+        DATABASES = {
+            'default': {
+                'ENGINE': 'django.db.backends.sqlite3',
+                'NAME': BASE_DIR / 'db.sqlite3',
+            }
+        }
+    else:
+        raise Exception("❌ No database URL found. Set MYSQL_URL (and use MYSQL_PUBLIC_URL only for local).")
 
-print('--------------------------------')
-
-
-print(DATABASES)
-print('--------------------------------')
-print("🔍 Using MYSQL_URL for database connection")
+if DEBUG:
+    print('--------------------------------')
+    print(DATABASES)
+    print('--------------------------------')
+    if selected_db_url:
+        src = 'MYSQL_PUBLIC_URL' if (ENVIRONMENT == 'local' and MYSQL_PUBLIC_URL) else 'MYSQL_URL'
+        print(f"🔍 Database configured via {src}")
+    else:
+        print("🔍 Using local SQLite database")
 
 
 
@@ -247,6 +287,11 @@ CORS_ALLOWED_ORIGINS = [
     "https://dararabappfrontendv01-production.up.railway.app",
     "https://dararabappfrontendv01-dev.up.railway.app",
 ]
+
+# Allow extending CORS origins via env var (comma separated)
+CORS_ALLOWED_ORIGINS_ENV = os.getenv('CORS_ALLOWED_ORIGINS', '')
+if CORS_ALLOWED_ORIGINS_ENV:
+    CORS_ALLOWED_ORIGINS.extend([o.strip() for o in CORS_ALLOWED_ORIGINS_ENV.split(',') if o.strip()])
 
 
 

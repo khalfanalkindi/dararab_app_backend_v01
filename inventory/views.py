@@ -20,6 +20,8 @@ from .serializers import (
     AuthorSerializer, TranslatorSerializer, RightsOwnerSerializer,
     ReviewerSerializer, ContractSerializer, PrintTaskSerializer
 )
+from common.models import ListItem
+from common.serializers import ListItemSerializer
 ### ==== Shared Delete View ====
 class BaseDeleteView(generics.DestroyAPIView):
     permission_classes = [IsAuthenticated]
@@ -112,19 +114,42 @@ class ProductDetailAggregatedView(APIView):
                     "reviewer",
                     "project",
                 )
-                .prefetch_related("print_runs", "inventory__warehouse")
+                .prefetch_related("print_runs")
                 .get(pk=pk)
             )
         except Product.DoesNotExist:
             raise Http404("Product not found.")
+        except Exception as e:
+            return Response(
+                {"detail": f"Error fetching product: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        product_data = ProductSerializer(product, context={"request": request}).data
+        try:
+            product_data = ProductSerializer(product, context={"request": request}).data
+        except Exception as e:
+            return Response(
+                {"detail": f"Error serializing product: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        inventory_qs = Inventory.objects.filter(product_id=pk).select_related("warehouse")
-        inventory_data = InventorySerializer(inventory_qs, many=True, context={"request": request}).data
+        try:
+            inventory_qs = Inventory.objects.filter(product_id=pk).select_related("warehouse")
+            inventory_data = InventorySerializer(inventory_qs, many=True, context={"request": request}).data
+        except Exception as e:
+            return Response(
+                {"detail": f"Error serializing inventory: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        print_runs_qs = PrintRun.objects.filter(product_id=pk).select_related("status").order_by("edition_number")
-        print_runs_data = PrintRunSerializer(print_runs_qs, many=True, context={"request": request}).data
+        try:
+            print_runs_qs = PrintRun.objects.filter(product_id=pk).select_related("status").order_by("edition_number")
+            print_runs_data = PrintRunSerializer(print_runs_qs, many=True, context={"request": request}).data
+        except Exception as e:
+            return Response(
+                {"detail": f"Error serializing print runs: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
         return Response(
             {

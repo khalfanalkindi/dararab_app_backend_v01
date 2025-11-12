@@ -1,6 +1,8 @@
 from rest_framework import generics, viewsets
+from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import ProtectedError, Sum, Count, OuterRef, Subquery
+from django.db import transaction
+from django.db.models import ProtectedError, Sum, Count, OuterRef, Subquery, Q
 from rest_framework.response import Response
 from rest_framework import status
 from django.http import Http404
@@ -87,14 +89,50 @@ class ProductDeleteView(BaseDeleteView):
     serializer_class = ProductSerializer
 
 class ProductRetrieveView(generics.RetrieveAPIView):
-
     queryset = Product.objects.all().order_by('id')
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated]
 
     def get_serializer_context(self):
-        # if your serializer needs request in context
         return {'request': self.request}
+
+class ProductDetailAggregatedView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk, *args, **kwargs):
+        try:
+            product = (
+                Product.objects.select_related(
+                    "genre",
+                    "status",
+                    "language",
+                    "author",
+                    "translator",
+                    "rights_owner",
+                    "reviewer",
+                    "project",
+                )
+                .prefetch_related("print_runs", "inventory__warehouse")
+                .get(pk=pk)
+            )
+        except Product.DoesNotExist:
+            raise Http404("Product not found.")
+
+        product_data = ProductSerializer(product, context={"request": request}).data
+
+        inventory_qs = Inventory.objects.filter(product_id=pk).select_related("warehouse")
+        inventory_data = InventorySerializer(inventory_qs, many=True, context={"request": request}).data
+
+        print_runs_qs = PrintRun.objects.filter(product_id=pk).select_related("status").order_by("edition_number")
+        print_runs_data = PrintRunSerializer(print_runs_qs, many=True, context={"request": request}).data
+
+        return Response(
+            {
+                "product": product_data,
+                "inventory": inventory_data,
+                "print_runs": print_runs_data,
+            }
+        )
 
 # ============================== PrintRunList ==============================
 
@@ -226,6 +264,73 @@ class PrintRunDeleteByProductEditionView(generics.DestroyAPIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+class PrintRunBulkUpsertView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        if not isinstance(request.data, list):
+            return Response(
+                {"detail": "Expected a list of print run objects."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        results = []
+        with transaction.atomic():
+            for index, item in enumerate(request.data):
+                item_data = item.copy()
+                pk = item_data.get("id")
+                try:
+                    if pk:
+                        instance = PrintRun.objects.get(pk=pk)
+                        serializer = PrintRunSerializer(
+                            instance,
+                            data=item_data,
+                            partial=True,
+                            context={"request": request},
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        serializer.save(updated_by=request.user)
+                    else:
+                        serializer = PrintRunSerializer(
+                            data=item_data,
+                            context={"request": request},
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        serializer.save(
+                            created_by=request.user,
+                            updated_by=request.user,
+                        )
+                    results.append(serializer.data)
+                except PrintRun.DoesNotExist:
+                    transaction.set_rollback(True)
+                    return Response(
+                        {
+                            "detail": f"PrintRun with id {pk} not found.",
+                            "index": index,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                except serializers.ValidationError as exc:
+                    transaction.set_rollback(True)
+                    return Response(
+                        {
+                            "index": index,
+                            "errors": exc.detail,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                except Exception as exc:  # pragma: no cover - safety net
+                    transaction.set_rollback(True)
+                    return Response(
+                        {
+                            "index": index,
+                            "detail": str(exc),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        return Response(results, status=status.HTTP_200_OK)
+
 # ============================== Warehouse ==============================
 class WarehouseListCreateView(generics.ListCreateAPIView):
     queryset = Warehouse.objects.all().order_by('name_en')
@@ -323,6 +428,67 @@ class InventoryUpdateView(generics.UpdateAPIView):
 class InventoryDeleteView(BaseDeleteView):
     queryset = Inventory.objects.all().order_by('id')
     serializer_class = InventorySerializer
+
+class InventoryBulkUpsertView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        if not isinstance(request.data, list):
+            return Response(
+                {"detail": "Expected a list of inventory objects."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        results = []
+        with transaction.atomic():
+            for index, item in enumerate(request.data):
+                item_data = item.copy()
+                pk = item_data.get("id")
+                try:
+                    if pk:
+                        instance = Inventory.objects.get(pk=pk)
+                        serializer = InventorySerializer(
+                            instance,
+                            data=item_data,
+                            partial=True,
+                            context={"request": request},
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        serializer.save(updated_by=request.user)
+                    else:
+                        serializer = InventorySerializer(
+                            data=item_data,
+                            context={"request": request},
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        serializer.save(
+                            created_by=request.user,
+                            updated_by=request.user,
+                        )
+                    results.append(serializer.data)
+                except Inventory.DoesNotExist:
+                    transaction.set_rollback(True)
+                    return Response(
+                        {
+                            "detail": f"Inventory with id {pk} not found.",
+                            "index": index,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                except serializers.ValidationError as exc:
+                    transaction.set_rollback(True)
+                    return Response(
+                        {"index": index, "errors": exc.detail},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                except Exception as exc:  # pragma: no cover - safety net
+                    transaction.set_rollback(True)
+                    return Response(
+                        {"index": index, "detail": str(exc)},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        return Response(results, status=status.HTTP_200_OK)
 
 # New views for product-specific inventory operations
 class InventoryUpdateByProductView(generics.UpdateAPIView):
@@ -542,25 +708,120 @@ class PrintTaskDeleteView(BaseDeleteView):
 #----
 
 
+class BootstrapDataView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    def get(self, request, *args, **kwargs):
+        # Product summaries with pagination (reuse ProductSummaryView logic)
+        summary_view = ProductSummaryView()
+        summary_view.request = request
+        queryset = summary_view.get_queryset()
+
+        paginator = self.pagination_class()
+        paginated_qs = paginator.paginate_queryset(queryset, request, view=summary_view)
+        summary_serializer = ProductSummarySerializer(
+            paginated_qs, many=True, context={"request": request}
+        )
+        paginated_summary = paginator.get_paginated_response(summary_serializer.data).data
+
+        # List items
+        genres = ListItem.objects.filter(list_type__code="genre", is_active=True).order_by("display_name_en")
+        statuses = ListItem.objects.filter(list_type__code="product_status", is_active=True).order_by(
+            "display_name_en"
+        )
+        languages = ListItem.objects.filter(list_type__code="product_language", is_active=True).order_by(
+            "display_name_en"
+        )
+        print_run_statuses = ListItem.objects.filter(list_type__code="printrun_status", is_active=True).order_by(
+            "display_name_en"
+        )
+
+        listitem_context = {"request": request}
+        genres_data = ListItemSerializer(genres, many=True, context=listitem_context).data
+        statuses_data = ListItemSerializer(statuses, many=True, context=listitem_context).data
+        languages_data = ListItemSerializer(languages, many=True, context=listitem_context).data
+        print_run_statuses_data = ListItemSerializer(
+            print_run_statuses, many=True, context=listitem_context
+        ).data
+
+        # Warehouses & stakeholders
+        warehouse_data = WarehouseSerializer(
+            Warehouse.objects.order_by("name_en"), many=True, context={"request": request}
+        ).data
+        author_data = AuthorSerializer(
+            Author.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        translator_data = TranslatorSerializer(
+            Translator.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        rights_owner_data = RightsOwnerSerializer(
+            RightsOwner.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        reviewer_data = ReviewerSerializer(
+            Reviewer.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+
+        return Response(
+            {
+                "product_summary": paginated_summary,
+                "genres": genres_data,
+                "statuses": statuses_data,
+                "languages": languages_data,
+                "warehouses": warehouse_data,
+                "authors": author_data,
+                "translators": translator_data,
+                "rights_owners": rights_owner_data,
+                "reviewers": reviewer_data,
+                "print_run_statuses": print_run_statuses_data,
+            }
+        )
+
+
 class ProductSummaryView(generics.ListAPIView):
     serializer_class   = ProductSummarySerializer
     permission_classes = [IsAuthenticated]
     pagination_class   = StandardResultsSetPagination
 
     def get_queryset(self):
-        latest = PrintRun.objects.filter(product=OuterRef('pk'))\
-                                 .order_by('-edition_number')
-        return (
-            Product.objects
-                   .annotate(
-                       editions_count=Count('print_runs', distinct=True),
-                       stock=Sum('inventory__quantity'),
-                       latest_price=Subquery(latest.values('price')[:1]),
-                       latest_cost=Subquery(latest.values('print_cost')[:1]),
-                   )
-                   .select_related('genre','status','language','author','translator')
-                   .order_by('id')       # ← add this
+        request = self.request
+        params = request.query_params if request else {}
+        search = params.get("search", "").strip()
+        genre_id = params.get("genre_id")
+        status_id = params.get("status_id")
+        language_id = params.get("language_id")
+
+        latest = PrintRun.objects.filter(product=OuterRef('pk')).order_by('-edition_number')
+
+        queryset = (
+            Product.objects.annotate(
+                editions_count=Count('print_runs', distinct=True),
+                stock=Sum('inventory__quantity'),
+                latest_price=Subquery(latest.values('price')[:1]),
+                latest_cost=Subquery(latest.values('print_cost')[:1]),
+            )
+            .select_related('genre', 'status', 'language', 'author', 'translator')
         )
+
+        if search:
+            queryset = queryset.filter(
+                Q(isbn__icontains=search)
+                | Q(title_en__icontains=search)
+                | Q(title_ar__icontains=search)
+                | Q(author__name__icontains=search)
+                | Q(translator__name__icontains=search)
+            )
+
+        if genre_id:
+            queryset = queryset.filter(genre_id=genre_id)
+
+        if status_id:
+            queryset = queryset.filter(status_id=status_id)
+
+        if language_id:
+            queryset = queryset.filter(language_id=language_id)
+
+        return queryset.order_by('id')
     def get_serializer_context(self):
 
         return { 'request': self.request }

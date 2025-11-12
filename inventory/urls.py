@@ -13,12 +13,15 @@ urlpatterns = [
     path("products/<int:pk>/", views.ProductUpdateView.as_view(), name="product-update"),
     path("products/<int:pk>/delete/", views.ProductDeleteView.as_view(), name="product-delete"),
     path("products/<int:pk>/detail/",views.ProductRetrieveView.as_view(),name="product-retrieve"),
+    path("products/<int:pk>/aggregated/", views.ProductDetailAggregatedView.as_view(), name="product-aggregated"),
 
+    path("bootstrap/", views.BootstrapDataView.as_view(), name="inventory-bootstrap"),
     path('product-summary/', views.ProductSummaryView.as_view(), name='product-summary'),
     path('pos-product-summary/', views.POSProductViewSet.as_view({'get': 'list'}), name='pos-product-summary'),
 
       ### ===== print Runs =====
     path("print-runs/",views.PrintRunListCreateView.as_view(),   name="printrun-list-create"),
+    path("print-runs/bulk/", views.PrintRunBulkUpsertView.as_view(), name="printrun-bulk-upsert"),
     path("print-runs/<int:pk>/", views.PrintRunUpdateView.as_view(),       name="printrun-update"),
     path("print-runs/<int:pk>/delete/", views.PrintRunDeleteView.as_view(), name="printrun-delete"),
     path("products/<int:product_id>/print-runs/update/",views.PrintRunUpdateByProductEditionView.as_view(),name="printrun-update-by-product"),
@@ -32,6 +35,7 @@ urlpatterns = [
 
     ### ===== Inventory =====
     path("inventory/", views.InventoryListCreateView.as_view(), name="inventory-list-create"),
+    path("inventory/bulk/", views.InventoryBulkUpsertView.as_view(), name="inventory-bulk-upsert"),
     path("inventory/<int:pk>/", views.InventoryUpdateView.as_view(), name="inventory-update"),
     path("inventory/<int:pk>/delete/", views.InventoryDeleteView.as_view(), name="inventory-delete"),
     path("inventory/product/<int:product_id>/update/", views.InventoryUpdateByProductView.as_view(), name="inventory-update-by-product"),

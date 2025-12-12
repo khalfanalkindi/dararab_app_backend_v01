@@ -853,6 +853,7 @@ class ProductSummaryView(generics.ListAPIView):
     
 class POSProductViewSet(viewsets.ModelViewSet):
     serializer_class = POSProductSummarySerializer
+    pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
         latest = PrintRun.objects.filter(product=OuterRef('pk'))\
@@ -875,6 +876,24 @@ class POSProductViewSet(viewsets.ModelViewSet):
                 inventory__warehouse_id=warehouse_id,
                 inventory__quantity__gt=0
             ).distinct()
+        
+        # Server-side search filtering
+        search = self.request.query_params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(title_en__icontains=search) |
+                Q(title_ar__icontains=search) |
+                Q(isbn__icontains=search)
+            )
+        
+        # Server-side genre filtering
+        genre_id = self.request.query_params.get('genre_id')
+        if genre_id:
+            try:
+                genre_id_int = int(genre_id)
+                queryset = queryset.filter(genre_id=genre_id_int)
+            except (ValueError, TypeError):
+                pass  # Ignore invalid genre_id
             
         return queryset
     

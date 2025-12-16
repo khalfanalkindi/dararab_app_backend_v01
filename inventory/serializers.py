@@ -256,13 +256,32 @@ class InventorySerializer(serializers.ModelSerializer):
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
         
     def validate(self, data):
-        # Check if we have either product_id or product
-        if 'product' not in data and 'product_id' not in self.initial_data:
-            raise serializers.ValidationError({"product": "Product is required"})
+        # For updates (PATCH), product and warehouse are already set on the instance
+        # Only validate these fields when creating (POST) or when explicitly provided
+        instance = getattr(self, 'instance', None)
+        is_update = instance is not None
+        
+        if not is_update:
+            # Creating new inventory - product and warehouse are required
+            has_product = 'product' in data or 'product_id' in data
+            if not has_product:
+                # Check initial_data if available (for bulk operations)
+                initial = getattr(self, 'initial_data', {})
+                if isinstance(initial, dict):
+                    has_product = 'product' in initial or 'product_id' in initial
+                if not has_product:
+                    raise serializers.ValidationError({"product_id": "Product is required"})
             
-        # Check if we have either warehouse_id or warehouse
-        if 'warehouse' not in data and 'warehouse_id' not in self.initial_data:
-            raise serializers.ValidationError({"warehouse": "Warehouse is required"})
+            has_warehouse = 'warehouse' in data or 'warehouse_id' in data
+            if not has_warehouse:
+                # Check initial_data if available (for bulk operations)
+                initial = getattr(self, 'initial_data', {})
+                if isinstance(initial, dict):
+                    has_warehouse = 'warehouse' in initial or 'warehouse_id' in initial
+                if not has_warehouse:
+                    raise serializers.ValidationError({"warehouse_id": "Warehouse is required"})
+        # For updates, if product_id or warehouse_id are provided, validate them
+        # But they're not required since the instance already has them
             
         return data
     

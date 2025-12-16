@@ -464,56 +464,129 @@ class InventoryBulkUpsertView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        results = []
-        with transaction.atomic():
-            for index, item in enumerate(request.data):
-                item_data = item.copy()
-                pk = item_data.get("id")
-                try:
-                    if pk:
-                        instance = Inventory.objects.get(pk=pk)
-                        serializer = InventorySerializer(
-                            instance,
-                            data=item_data,
-                            partial=True,
-                            context={"request": request},
-                        )
-                        serializer.is_valid(raise_exception=True)
-                        serializer.save(updated_by=request.user)
-                    else:
-                        serializer = InventorySerializer(
-                            data=item_data,
-                            context={"request": request},
-                        )
-                        serializer.is_valid(raise_exception=True)
-                        serializer.save(
-                            created_by=request.user,
-                            updated_by=request.user,
-                        )
-                    results.append(serializer.data)
-                except Inventory.DoesNotExist:
-                    transaction.set_rollback(True)
-                    return Response(
-                        {
-                            "detail": f"Inventory with id {pk} not found.",
-                            "index": index,
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                except serializers.ValidationError as exc:
-                    transaction.set_rollback(True)
-                    return Response(
-                        {"index": index, "errors": exc.detail},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                except Exception as exc:  # pragma: no cover - safety net
-                    transaction.set_rollback(True)
-                    return Response(
-                        {"index": index, "detail": str(exc)},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+        if len(request.data) == 0:
+            return Response(
+                {"detail": "Empty list provided. At least one inventory item is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        return Response(results, status=status.HTTP_200_OK)
+        results = []
+        errors = []
+        
+        # Validate all items first before processing
+        validated_data = []
+        for index, item in enumerate(request.data):
+            if not isinstance(item, dict):
+                return Response(
+                    {"detail": f"Item at index {index} must be a dictionary."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            
+            # Ensure required fields are present
+            if "product_id" not in item:
+                return Response(
+                    {"detail": f"Item at index {index} is missing 'product_id'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if "warehouse_id" not in item:
+                return Response(
+                    {"detail": f"Item at index {index} is missing 'warehouse_id'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if "quantity" not in item:
+                return Response(
+                    {"detail": f"Item at index {index} is missing 'quantity'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            
+            validated_data.append(item)
+
+        # Process all items in a single transaction
+        try:
+            with transaction.atomic():
+                for index, item_data in enumerate(validated_data):
+                    pk = item_data.get("id")
+                    
+                    if pk:
+                        # Update existing inventory
+                        try:
+                            instance = Inventory.objects.get(pk=pk)
+                            serializer = InventorySerializer(
+                                instance,
+                                data=item_data,
+                                partial=True,
+                                context={"request": request},
+                            )
+                            serializer.is_valid(raise_exception=True)
+                            serializer.save(updated_by=request.user)
+                            results.append(serializer.data)
+                        except Inventory.DoesNotExist:
+                            raise serializers.ValidationError(
+                                {f"index_{index}": f"Inventory with id {pk} not found."}
+                            )
+                    else:
+                        # Create new inventory or update existing (handles unique_together constraint)
+                        product_id = item_data.get("product_id")
+                        warehouse_id = item_data.get("warehouse_id")
+                        quantity = item_data.get("quantity", 0)
+                        
+                        # Check if inventory already exists for this product+warehouse combination
+                        # Due to unique_together constraint, only one inventory per product+warehouse
+                        existing = Inventory.objects.filter(
+                            product_id=product_id,
+                            warehouse_id=warehouse_id
+                        ).first()
+                        
+                        if existing:
+                            # Update existing inventory - replace quantity with new value
+                            # This ensures one inventory record per product+warehouse combination
+                            old_quantity = existing.quantity
+                            serializer = InventorySerializer(
+                                existing,
+                                data=item_data,
+                                partial=True,
+                                context={"request": request},
+                            )
+                            serializer.is_valid(raise_exception=True)
+                            serializer.save(updated_by=request.user)
+                            result_data = serializer.data
+                            result_data['_action'] = 'updated'
+                            result_data['_old_quantity'] = old_quantity
+                            results.append(result_data)
+                        else:
+                            # Create new inventory
+                            serializer = InventorySerializer(
+                                data=item_data,
+                                context={"request": request},
+                            )
+                            serializer.is_valid(raise_exception=True)
+                            serializer.save(
+                                created_by=request.user,
+                                updated_by=request.user,
+                            )
+                            result_data = serializer.data
+                            result_data['_action'] = 'created'
+                            results.append(result_data)
+
+            return Response(
+                {
+                    "detail": f"Successfully processed {len(results)} inventory item(s).",
+                    "results": results,
+                    "count": len(results),
+                },
+                status=status.HTTP_200_OK,
+            )
+            
+        except serializers.ValidationError as exc:
+            return Response(
+                {"detail": "Validation failed", "errors": exc.detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:
+            return Response(
+                {"detail": f"Error processing bulk inventory: {str(exc)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 # New views for product-specific inventory operations
 class InventoryUpdateByProductView(generics.UpdateAPIView):

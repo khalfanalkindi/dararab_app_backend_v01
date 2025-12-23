@@ -222,7 +222,7 @@ class PrintRunSerializer(serializers.ModelSerializer):
         model = PrintRun
         fields = [
           'id', 'product', 'product_id',
-          'edition_number', 'print_cost', 'price',
+          'edition_number', 'price_omr', 'price',
           'status', 'status_id', 'notes','published_at', 
           'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
@@ -295,6 +295,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     status = ListItemSerializer(read_only=True)
     type = ListItemSerializer(read_only=True)
     language = ListItemSerializer(read_only=True)
+    contracts = serializers.SerializerMethodField()
 
     # ✅ Writable IDs for creation and update
     author_id = serializers.PrimaryKeyRelatedField(
@@ -322,6 +323,71 @@ class ProjectSerializer(serializers.ModelSerializer):
         queryset=ListItem.objects.all(), source='language', write_only=True, required=False
     )
 
+    def get_contracts(self, obj):
+        # Only include contracts if include_contracts is True in context
+        include_contracts = self.context.get('include_contracts', False)
+        if include_contracts:
+            # Use prefetched contracts if available
+            contracts = getattr(obj, 'contract_set', None)
+            if contracts is not None:
+                # Return basic contract data to avoid deep nesting
+                return [
+                    {
+                        'id': c.id,
+                        'title': c.title,
+                        'contract_type': {'id': c.contract_type.id, 'display_name_en': str(c.contract_type)} if c.contract_type else None,
+                        'start_date': c.start_date.isoformat() if c.start_date else None,
+                        'end_date': c.end_date.isoformat() if c.end_date else None,
+                        'commission_percent': c.commission_percent,
+                        'fixed_amount': c.fixed_amount,
+                        'free_copies': c.free_copies,
+                        'contract_duration': c.contract_duration,
+                        'payment_schedule': c.payment_schedule,
+                        'notes': c.notes,
+                        'created_at': c.created_at.isoformat() if c.created_at else None,
+                        'updated_at': c.updated_at.isoformat() if c.updated_at else None,
+                    }
+                    for c in contracts.all()
+                ]
+        return None
+    
+    has_product = serializers.SerializerMethodField()
+    all_contracts_closed = serializers.SerializerMethodField()
+    
+    def get_has_product(self, obj):
+        """Check if this project has already been converted to a product"""
+        # Use annotated value if available (from queryset optimization)
+        if hasattr(obj, 'has_product'):
+            return obj.has_product
+        # Fallback to direct query if annotation not available
+        from .models import Product
+        return Product.objects.filter(project=obj).exists()
+    
+    def get_all_contracts_closed(self, obj):
+        """Check if all contracts for this project are closed"""
+        # Use annotated value if available (from queryset optimization)
+        if hasattr(obj, 'all_contracts_closed'):
+            return obj.all_contracts_closed
+        # Fallback to direct query if annotation not available
+        from .models import Contract
+        from common.models import ListItem
+        
+        contracts = Contract.objects.filter(project=obj)
+        if not contracts.exists():
+            return True  # No contracts means all are "closed" (none to close)
+        
+        closed_status = ListItem.objects.filter(
+            list_type__code="contract_status",
+            value__iexact="closed"
+        ).first()
+        
+        if not closed_status:
+            return False  # Can't determine if closed status exists
+        
+        # Check if all contracts have closed status
+        open_contracts = contracts.exclude(status=closed_status)
+        return not open_contracts.exists()
+
     class Meta:
         model = Project
         fields = [
@@ -335,6 +401,9 @@ class ProjectSerializer(serializers.ModelSerializer):
             "updated_by",
             "created_at",
             "updated_at",
+            "contracts",
+            "has_product",
+            "all_contracts_closed",
 
             # Nested output
             "author", "translator", "rights_owner", "reviewer",
@@ -344,7 +413,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "author_id", "translator_id", "rights_owner_id", "reviewer_id",
             "progress_status_id", "status_id", "type_id", "language_id",
         ]
-        read_only_fields = ["created_by", "updated_by", "created_at", "updated_at"]
+        read_only_fields = ["created_by", "updated_by", "created_at", "updated_at", "has_product", "all_contracts_closed"]
 
 class ContractedPartyField(serializers.Field):
     def to_representation(self, value):
@@ -390,6 +459,7 @@ class ContractSerializer(serializers.ModelSerializer):
     # Read-only nested serializers
     status = ListItemSerializer(read_only=True)
     contract_type = ListItemSerializer(read_only=True)
+    royalties_type = ListItemSerializer(read_only=True)
     project = ProjectBasicSerializer(read_only=True)
     signed_by = UserBasicSerializer(read_only=True)
 
@@ -419,6 +489,17 @@ class ContractSerializer(serializers.ModelSerializer):
 )
     def get_contract_type_id(self, obj):
         return obj.contract_type.id if obj.contract_type else None
+    
+    royalties_type_id = serializers.SerializerMethodField()
+    royalties_type_id_write = serializers.PrimaryKeyRelatedField(
+        source='royalties_type',
+        queryset=ListItem.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
+    def get_royalties_type_id(self, obj):
+        return obj.royalties_type.id if obj.royalties_type else None
     
     project_id = serializers.PrimaryKeyRelatedField(
         source='project',
@@ -457,6 +538,7 @@ class ContractSerializer(serializers.ModelSerializer):
             'id', 'title', 'project', 'project_id',
             'contract_type', 'contract_type_id','contract_type_id_write',
             'status', 'status_id','status_id_write',
+            'royalties_type', 'royalties_type_id', 'royalties_type_id_write',
             'signed_by', 'signed_by_id',
             'contracted_party_type', 'contracted_party_id', 'contracted_party_details',
             'contracted_party_type_value', 'contracted_party_id_value',
@@ -534,18 +616,42 @@ class PrintTaskSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
 
 class ProductSummarySerializer(serializers.ModelSerializer):
-    genre_id      = serializers.IntegerField()    # new
-    status_id     = serializers.IntegerField()  # new
-    language_id   = serializers.IntegerField()  # new
-    genre_name    = serializers.CharField(source='genre.display_name_en')
-    status_name   = serializers.CharField(source='status.display_name_en')
-    language_name = serializers.CharField(source='language.display_name_en', default=None)
-    author_name     = serializers.CharField(source='author.name',    default=None)
-    translator_name = serializers.CharField(source='translator.name', default=None)
+    genre_id      = serializers.SerializerMethodField()
+    status_id     = serializers.SerializerMethodField()
+    language_id   = serializers.SerializerMethodField()
+    
+    def get_genre_id(self, obj):
+        return obj.genre.id if obj.genre else None
+    
+    def get_status_id(self, obj):
+        return obj.status.id if obj.status else None
+    
+    def get_language_id(self, obj):
+        return obj.language.id if obj.language else None
+    genre_name    = serializers.SerializerMethodField()
+    status_name   = serializers.SerializerMethodField()
+    language_name = serializers.SerializerMethodField()
+    author_name     = serializers.SerializerMethodField()
+    translator_name = serializers.SerializerMethodField()
+    
+    def get_genre_name(self, obj):
+        return obj.genre.display_name_en if obj.genre else None
+    
+    def get_status_name(self, obj):
+        return obj.status.display_name_en if obj.status else None
+    
+    def get_language_name(self, obj):
+        return obj.language.display_name_en if obj.language else None
+    
+    def get_author_name(self, obj):
+        return obj.author.name if obj.author else None
+    
+    def get_translator_name(self, obj):
+        return obj.translator.name if obj.translator else None
     editions_count = serializers.IntegerField()
     stock          = serializers.IntegerField()
     latest_price   = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
-    latest_cost    = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
+    latest_price_omr = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
     cover_design_url = serializers.SerializerMethodField()
 
     class Meta:
@@ -556,7 +662,7 @@ class ProductSummarySerializer(serializers.ModelSerializer):
             'genre_name', 'status_name', 'language_name',
             'author_name', 'translator_name',
             'editions_count', 'stock',
-            'latest_price', 'latest_cost', "cover_design_url"
+            'latest_price', 'latest_price_omr', "cover_design_url"
         ]
     
     def get_cover_design_url(self, obj):

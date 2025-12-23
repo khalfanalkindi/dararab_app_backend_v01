@@ -5,8 +5,10 @@ urlpatterns = [
 
     ### ===== Project =====
     path("projects/", views.ProjectListCreateView.as_view(), name="project-list-create"),
+    path("projects/bootstrap/", views.ProjectsBootstrapView.as_view(), name="projects-bootstrap"),
     path("projects/<int:pk>/", views.ProjectUpdateView.as_view(), name="project-update"),
     path("projects/<int:pk>/delete/", views.ProjectDeleteView.as_view(), name="project-delete"),
+    path("projects/<int:project_id>/convert-to-product/", views.ProjectToProductView.as_view(), name="project-convert-to-product"),
 
     ### ===== Product =====
     path("products/", views.ProductListCreateView.as_view(), name="product-list-create"),
@@ -36,6 +38,7 @@ urlpatterns = [
     ### ===== Inventory =====
     path("inventory/", views.InventoryListCreateView.as_view(), name="inventory-list-create"),
     path("inventory/bulk/", views.InventoryBulkUpsertView.as_view(), name="inventory-bulk-upsert"),
+    path("inventory/bulk-delete/", views.InventoryBulkDeleteView.as_view(), name="inventory-bulk-delete"),
     path("inventory/<int:pk>/", views.InventoryUpdateView.as_view(), name="inventory-update"),
     path("inventory/<int:pk>/delete/", views.InventoryDeleteView.as_view(), name="inventory-delete"),
     path("inventory/product/<int:product_id>/update/", views.InventoryUpdateByProductView.as_view(), name="inventory-update-by-product"),
@@ -73,6 +76,7 @@ urlpatterns = [
 
     ### ===== Contracts =====
     path('contracts/', views.ContractListCreateView.as_view(), name='contract-list-create'),
+    path('contracts/bootstrap/', views.ContractsBootstrapView.as_view(), name='contracts-bootstrap'),
     path('contracts/<int:pk>/', views.ContractUpdateView.as_view(), name='contract-update'),
     path('contracts/<int:pk>/delete/', views.ContractDeleteView.as_view(), name='contract-delete'),
 

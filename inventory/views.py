@@ -1,8 +1,9 @@
-from rest_framework import generics, viewsets
+from rest_framework import generics, viewsets, filters
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from django.db import transaction
-from django.db.models import ProtectedError, Sum, Count, OuterRef, Subquery, Q
+from django.db import transaction, models
+from django.db.models import ProtectedError, Sum, Count, OuterRef, Subquery, Q, Value, F, Case, When, Exists
+from django.db.models.functions import Coalesce
 from rest_framework.response import Response
 from rest_framework import status
 from django.http import Http404
@@ -22,6 +23,10 @@ from .serializers import (
 )
 from common.models import ListItem
 from common.serializers import ListItemSerializer
+from users.serializers import UserBasicSerializer
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 ### ==== Shared Delete View ====
 class BaseDeleteView(generics.DestroyAPIView):
     permission_classes = [IsAuthenticated]
@@ -40,9 +45,95 @@ class BaseDeleteView(generics.DestroyAPIView):
 
 # ============================== Project ==============================
 class ProjectListCreateView(generics.ListCreateAPIView):
-    queryset = Project.objects.all().order_by('-created_at', 'id')
+    queryset = Project.objects.select_related(
+        'progress_status',
+        'status',
+        'type',
+        'author',
+        'translator',
+        'rights_owner',
+        'reviewer'
+    ).prefetch_related('contract_set').order_by('-created_at', 'id')
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['title_ar', 'title_original', 'approval_status', 'created_at', 'updated_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        from .models import Product
+        from common.models import ListItem
+        
+        queryset = super().get_queryset()
+        
+        # Search filter - search in title_ar and title_original
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(title_ar__icontains=search) | 
+                Q(title_original__icontains=search)
+            )
+        
+        # Approval status filter
+        approval_status = self.request.query_params.get('approval_status')
+        if approval_status is not None:
+            queryset = queryset.filter(approval_status=approval_status.lower() == 'true')
+        
+        # Progress status filter
+        progress_status_id = self.request.query_params.get('progress_status_id')
+        if progress_status_id:
+            try:
+                queryset = queryset.filter(progress_status_id=int(progress_status_id))
+            except (ValueError, TypeError):
+                pass  # Ignore invalid progress_status_id
+        
+        # Status filter
+        status_id = self.request.query_params.get('status_id')
+        if status_id:
+            try:
+                queryset = queryset.filter(status_id=int(status_id))
+            except (ValueError, TypeError):
+                pass  # Ignore invalid status_id
+        
+        # Type filter
+        type_id = self.request.query_params.get('type_id')
+        if type_id:
+            try:
+                queryset = queryset.filter(type_id=int(type_id))
+            except (ValueError, TypeError):
+                pass  # Ignore invalid type_id
+        
+        # Check if contracts should be included
+        include_contracts = self.request.query_params.get('include_contracts', 'false').lower() == 'true'
+        
+        # Note: has_product and all_contracts_closed are calculated in the serializer
+        # to avoid complex annotation issues. The serializer methods handle this efficiently.
+        
+        # Note: Ordering is handled by OrderingFilter, so we don't need to call order_by here
+        # The default ordering is set via the 'ordering' attribute
+        # Ensure select_related and prefetch_related are maintained
+        queryset = queryset.select_related(
+            'progress_status',
+            'status',
+            'type',
+            'author',
+            'translator',
+            'rights_owner',
+            'reviewer'
+        )
+        
+        # Only prefetch contracts if requested (to avoid unnecessary queries)
+        if include_contracts:
+            queryset = queryset.prefetch_related('contract_set')
+        
+        return queryset
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        # Pass include_contracts flag to serializer context
+        context['include_contracts'] = self.request.query_params.get('include_contracts', 'false').lower() == 'true'
+        return context
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -58,6 +149,287 @@ class ProjectUpdateView(generics.UpdateAPIView):
 class ProjectDeleteView(BaseDeleteView):
     queryset = Project.objects.all().order_by('id')
     serializer_class = ProjectSerializer
+
+class ProjectToProductView(APIView):
+    """
+    Convert a project to a product.
+    Only allowed when:
+    - All contracts are closed
+    - Project status is finalized
+    - Progress status is completed
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.select_related(
+                'progress_status', 'status', 'type', 'language',
+                'author', 'translator', 'rights_owner', 'reviewer'
+            ).prefetch_related('contract_set').get(id=project_id)
+        except Project.DoesNotExist:
+            return Response(
+                {"error": "Project not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Check if project already has a product
+        if Product.objects.filter(project=project).exists():
+            return Response(
+                {"error": "This project has already been converted to a product"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check conditions: all contracts closed, status finalized, progress completed
+        contracts = project.contract_set.all()
+        
+        # Check if all contracts are closed
+        closed_status = ListItem.objects.filter(
+            list_type__code="contract_status",
+            value__iexact="closed"
+        ).first()
+        
+        if closed_status:
+            open_contracts = contracts.exclude(status=closed_status)
+            if open_contracts.exists():
+                return Response(
+                    {"error": "All contracts must be closed before converting to product"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # Check if project status is finalized
+        finalized_status = ListItem.objects.filter(
+            list_type__code="projects_status",
+            value__iexact="finalized"
+        ).first()
+        
+        if finalized_status and project.status != finalized_status:
+            return Response(
+                {"error": "Project status must be finalized before converting to product"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if progress status is completed
+        completed_status = ListItem.objects.filter(
+            list_type__code="progress_status",
+            value__iexact="completed"
+        ).first()
+        
+        if completed_status and project.progress_status != completed_status:
+            return Response(
+                {"error": "Progress status must be completed before converting to product"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get available status for product
+        available_status = ListItem.objects.filter(
+            list_type__code="product_status",
+            value__iexact="available"
+        ).first()
+        
+        if not available_status:
+            return Response(
+                {"error": "Available status not found in product_status list"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Extract contract parties by type
+        author_id = None
+        translator_id = None
+        rights_owner_id = None
+        reviewer_id = None
+        
+        for contract in contracts:
+            contract_type_name = contract.contract_type.value.lower() if contract.contract_type else ""
+            if 'author' in contract_type_name and contract.contracted_party:
+                # Get the author ID from the generic foreign key
+                if contract.content_type.model == 'author':
+                    author_id = contract.object_id
+            elif 'translator' in contract_type_name and contract.contracted_party:
+                if contract.content_type.model == 'translator':
+                    translator_id = contract.object_id
+            elif 'rights' in contract_type_name and contract.contracted_party:
+                if contract.content_type.model == 'rightsowner':
+                    rights_owner_id = contract.object_id
+            elif 'reviewer' in contract_type_name and contract.contracted_party:
+                if contract.content_type.model == 'reviewer':
+                    reviewer_id = contract.object_id
+        
+        # Fallback to project's assigned parties if not found in contracts
+        if not author_id and project.author:
+            author_id = project.author.id
+        if not translator_id and project.translator:
+            translator_id = project.translator.id
+        if not rights_owner_id and project.rights_owner:
+            rights_owner_id = project.rights_owner.id
+        if not reviewer_id and project.reviewer:
+            reviewer_id = project.reviewer.id
+        
+        # Get default genre and language
+        default_genre = ListItem.objects.filter(id=9).first()
+        default_language = ListItem.objects.filter(id=50).first()
+        
+        # Use project's language if available, otherwise use default
+        product_language = project.language if project.language else default_language
+        
+        # Create product with transaction
+        with transaction.atomic():
+            product = Product.objects.create(
+                project=project,
+                isbn="000-000",  # Default ISBN
+                title_ar=project.title_ar,
+                title_en=project.title_original or project.title_ar,
+                cover_design="https://dararab.co.uk/wp-content/uploads/2022/07/dararab-logo-1.png",
+                genre=default_genre,  # Default genre_id=9
+                status=available_status,
+                language=product_language,  # Use project language or default (50)
+                author_id=author_id,
+                translator_id=translator_id,
+                rights_owner_id=rights_owner_id,
+                reviewer_id=reviewer_id,
+                is_direct_product=True,
+                created_by=request.user,
+                updated_by=request.user
+            )
+        
+        # Serialize and return the created product
+        serializer = ProductSerializer(product)
+        return Response(
+            {
+                "message": "Project successfully converted to product",
+                "product": serializer.data
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+class ProjectsBootstrapView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """
+        Bootstrap endpoint for projects page.
+        Returns all static data needed for the projects page in a single request.
+        """
+        # List items for projects
+        progress_statuses = ListItem.objects.filter(
+            list_type__code="progress_status", 
+            is_active=True
+        ).order_by("display_name_en")
+        
+        projects_statuses = ListItem.objects.filter(
+            list_type__code="projects_status", 
+            is_active=True
+        ).order_by("display_name_en")
+        
+        projects_types = ListItem.objects.filter(
+            list_type__code="projects_type", 
+            is_active=True
+        ).order_by("display_name_en")
+        
+        listitem_context = {"request": request}
+        progress_statuses_data = ListItemSerializer(
+            progress_statuses, many=True, context=listitem_context
+        ).data
+        projects_statuses_data = ListItemSerializer(
+            projects_statuses, many=True, context=listitem_context
+        ).data
+        projects_types_data = ListItemSerializer(
+            projects_types, many=True, context=listitem_context
+        ).data
+        
+        # People data
+        authors_data = AuthorSerializer(
+            Author.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        translators_data = TranslatorSerializer(
+            Translator.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        rights_owners_data = RightsOwnerSerializer(
+            RightsOwner.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        reviewers_data = ReviewerSerializer(
+            Reviewer.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        
+        return Response({
+            "progress_options": progress_statuses_data,
+            "status_options": projects_statuses_data,
+            "type_options": projects_types_data,
+            "authors": authors_data,
+            "translators": translators_data,
+            "rights_owners": rights_owners_data,
+            "reviewers": reviewers_data,
+        })
+
+
+class ContractsBootstrapView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """
+        Bootstrap endpoint for contracts page.
+        Returns all static data needed for the contracts page in a single request.
+        Note: Projects are fetched separately with pagination.
+        """
+        # Contract types
+        contract_types = ListItem.objects.filter(
+            list_type__code="contract_type",
+            is_active=True
+        ).order_by("id")
+        
+        # Contract statuses
+        contract_statuses = ListItem.objects.filter(
+            list_type__code="contract_status",
+            is_active=True
+        ).order_by("id")
+        
+        # Royalties types
+        royalties_types = ListItem.objects.filter(
+            list_type__code="royalties_type",
+            is_active=True
+        ).order_by("id")
+        
+        listitem_context = {"request": request}
+        contract_types_data = ListItemSerializer(
+            contract_types, many=True, context=listitem_context
+        ).data
+        contract_statuses_data = ListItemSerializer(
+            contract_statuses, many=True, context=listitem_context
+        ).data
+        royalties_types_data = ListItemSerializer(
+            royalties_types, many=True, context=listitem_context
+        ).data
+        
+        # Signatories (users)
+        signatories_data = UserBasicSerializer(
+            User.objects.filter(is_active=True).order_by("username"),
+            many=True,
+            context={"request": request}
+        ).data
+        
+        # People data
+        authors_data = AuthorSerializer(
+            Author.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        translators_data = TranslatorSerializer(
+            Translator.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        rights_owners_data = RightsOwnerSerializer(
+            RightsOwner.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        reviewers_data = ReviewerSerializer(
+            Reviewer.objects.order_by("name"), many=True, context={"request": request}
+        ).data
+        
+        return Response({
+            "contract_types": contract_types_data,
+            "contract_statuses": contract_statuses_data,
+            "royalties_types": royalties_types_data,
+            "signatories": signatories_data,
+            "authors": authors_data,
+            "translators": translators_data,
+            "rights_owners": rights_owners_data,
+            "reviewers": reviewers_data,
+        })
 
 # ============================== Product ==============================
 class ProductListCreateView(generics.ListCreateAPIView):
@@ -382,9 +754,13 @@ class InventoryListCreateView(generics.ListCreateAPIView):
     queryset = Inventory.objects.all()
     serializer_class = InventorySerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['product', 'warehouse', 'quantity', 'updated_at', 'created_at']
+    ordering = ['-created_at', 'id']  # Default ordering
 
     def get_queryset(self):
-        queryset = Inventory.objects.all().order_by('-created_at', 'id')
+        queryset = Inventory.objects.select_related('product', 'warehouse')
         product_id = self.request.query_params.get('product_id')
         warehouse_id = self.request.query_params.get('warehouse_id')
 
@@ -393,6 +769,8 @@ class InventoryListCreateView(generics.ListCreateAPIView):
         if warehouse_id:
             queryset = queryset.filter(warehouse_id=warehouse_id)
         
+        # Note: Ordering is handled by OrderingFilter, so we don't need to call order_by here
+        # The default ordering is set via the 'ordering' attribute
         return queryset
     def create(self, request, *args, **kwargs):
         # Handle frontend data format
@@ -454,6 +832,96 @@ class InventoryDeleteView(BaseDeleteView):
     queryset = Inventory.objects.all().order_by('id')
     serializer_class = InventorySerializer
 
+class InventoryBulkDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Bulk delete inventory items.
+        Expects a list of inventory IDs in the request body: {"ids": [1, 2, 3]}
+        Returns detailed results including which items were deleted and which failed.
+        """
+        if not isinstance(request.data, dict) or 'ids' not in request.data:
+            return Response(
+                {"detail": "Expected a dictionary with 'ids' key containing a list of inventory IDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ids = request.data.get('ids', [])
+        if not isinstance(ids, list) or len(ids) == 0:
+            return Response(
+                {"detail": "Empty list provided. At least one inventory ID is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate all IDs are integers
+        try:
+            ids = [int(id) for id in ids]
+        except (ValueError, TypeError):
+            return Response(
+                {"detail": "All IDs must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get all inventory items that exist
+        inventories = Inventory.objects.filter(id__in=ids)
+        existing_ids = set(inventories.values_list('id', flat=True))
+        missing_ids = set(ids) - existing_ids
+
+        # Track results
+        deleted_ids = []
+        failed_ids = []
+        errors = []
+
+        # Delete each inventory item
+        for inventory in inventories:
+            try:
+                inventory_id = inventory.id
+                inventory.delete()
+                deleted_ids.append(inventory_id)
+            except ProtectedError as e:
+                failed_ids.append(inventory.id)
+                errors.append({
+                    "id": inventory.id,
+                    "error": "Cannot delete due to related data.",
+                    "detail": str(e)
+                })
+            except Exception as e:
+                failed_ids.append(inventory.id)
+                errors.append({
+                    "id": inventory.id,
+                    "error": str(e)
+                })
+
+        # Add missing IDs to failed list
+        for missing_id in missing_ids:
+            failed_ids.append(missing_id)
+            errors.append({
+                "id": missing_id,
+                "error": "Inventory item not found."
+            })
+
+        # Prepare response
+        response_data = {
+            "deleted_count": len(deleted_ids),
+            "failed_count": len(failed_ids),
+            "total_requested": len(ids),
+            "deleted_ids": deleted_ids,
+            "failed_ids": failed_ids,
+            "errors": errors
+        }
+
+        # Return appropriate status code
+        if len(failed_ids) == 0:
+            # All succeeded
+            return Response(response_data, status=status.HTTP_200_OK)
+        elif len(deleted_ids) == 0:
+            # All failed
+            return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            # Partial success
+            return Response(response_data, status=status.HTTP_207_MULTI_STATUS)
+
 class InventoryBulkUpsertView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -482,22 +950,34 @@ class InventoryBulkUpsertView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             
-            # Ensure required fields are present
-            if "product_id" not in item:
-                return Response(
-                    {"detail": f"Item at index {index} is missing 'product_id'."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if "warehouse_id" not in item:
-                return Response(
-                    {"detail": f"Item at index {index} is missing 'warehouse_id'."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if "quantity" not in item:
-                return Response(
-                    {"detail": f"Item at index {index} is missing 'quantity'."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            # If item has an id, it's an update - only quantity is required
+            # If item doesn't have an id, it's a create - product_id, warehouse_id, and quantity are required
+            pk = item.get("id")
+            
+            if pk:
+                # Update: only quantity is required
+                if "quantity" not in item:
+                    return Response(
+                        {"detail": f"Item at index {index} is missing 'quantity'."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            else:
+                # Create: product_id, warehouse_id, and quantity are required
+                if "product_id" not in item:
+                    return Response(
+                        {"detail": f"Item at index {index} is missing 'product_id'."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if "warehouse_id" not in item:
+                    return Response(
+                        {"detail": f"Item at index {index} is missing 'warehouse_id'."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if "quantity" not in item:
+                    return Response(
+                        {"detail": f"Item at index {index} is missing 'quantity'."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             
             validated_data.append(item)
 
@@ -761,9 +1241,34 @@ class StakeholderDeleteView(generics.DestroyAPIView):
 # ============================== Contract ==============================
 
 class ContractListCreateView(generics.ListCreateAPIView):
-    queryset = Contract.objects.all().order_by('-created_at', 'id')
+    queryset = Contract.objects.select_related(
+        'project',
+        'contract_type',
+        'signed_by',
+        'status'
+    ).order_by('-created_at', 'id')
     serializer_class = ContractSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        
+        # Filter by project_id if provided
+        project_id = self.request.query_params.get('project_id')
+        if project_id:
+            try:
+                queryset = queryset.filter(project_id=int(project_id))
+            except (ValueError, TypeError):
+                pass  # Ignore invalid project_id
+        
+        # Ensure select_related is maintained
+        return queryset.select_related(
+            'project',
+            'contract_type',
+            'signed_by',
+            'status'
+        ).order_by('-created_at', 'id')
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -880,6 +1385,9 @@ class ProductSummaryView(generics.ListAPIView):
     serializer_class   = ProductSummarySerializer
     permission_classes = [IsAuthenticated]
     pagination_class   = StandardResultsSetPagination
+    filter_backends    = [filters.OrderingFilter]
+    ordering_fields    = ['id', 'title_en', 'title_ar', 'isbn', 'latest_price', 'status_id', 'created_at']
+    ordering           = ['id']  # Default ordering
 
     def get_queryset(self):
         request = self.request
@@ -894,11 +1402,12 @@ class ProductSummaryView(generics.ListAPIView):
         queryset = (
             Product.objects.annotate(
                 editions_count=Count('print_runs', distinct=True),
-                stock=Sum('inventory__quantity'),
+                stock=Coalesce(Sum('inventory__quantity'), Value(0)),
                 latest_price=Subquery(latest.values('price')[:1]),
-                latest_cost=Subquery(latest.values('print_cost')[:1]),
+                latest_price_omr=Subquery(latest.values('price_omr')[:1]),
             )
             .select_related('genre', 'status', 'language', 'author', 'translator')
+            .prefetch_related('print_runs')
         )
 
         if search:
@@ -906,8 +1415,8 @@ class ProductSummaryView(generics.ListAPIView):
                 Q(isbn__icontains=search)
                 | Q(title_en__icontains=search)
                 | Q(title_ar__icontains=search)
-                | Q(author__name__icontains=search)
-                | Q(translator__name__icontains=search)
+                | Q(author__isnull=False, author__name__icontains=search)
+                | Q(translator__isnull=False, translator__name__icontains=search)
             )
 
         if genre_id:
@@ -919,7 +1428,8 @@ class ProductSummaryView(generics.ListAPIView):
         if language_id:
             queryset = queryset.filter(language_id=language_id)
 
-        return queryset.order_by('id')
+        # Note: Ordering is handled by OrderingFilter, so we don't need to call order_by here
+        return queryset
     def get_serializer_context(self):
 
         return { 'request': self.request }
@@ -937,7 +1447,7 @@ class POSProductViewSet(viewsets.ModelViewSet):
                        editions_count=Count('print_runs', distinct=True),
                        stock=Sum('inventory__quantity'),
                        latest_price=Subquery(latest.values('price')[:1]),
-                       latest_cost=Subquery(latest.values('print_cost')[:1]),
+                       latest_price_omr=Subquery(latest.values('price_omr')[:1]),
                    )
                    .select_related('genre','status','language','author','translator')
                    .order_by('id')

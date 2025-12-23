@@ -109,7 +109,7 @@ class ProductAdmin(admin.ModelAdmin):
 
 @admin.register(PrintRun)
 class PrintRunAdmin(admin.ModelAdmin):
-    list_display  = ('id', 'product', 'edition_number', 'print_cost', 'price', 'status')
+    list_display  = ('id', 'product', 'edition_number', 'price_omr', 'price', 'status')
     search_fields = ('product__title_en', 'product__isbn')
     list_filter   = ('status',)
 # ========== Warehouse ==========

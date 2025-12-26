@@ -46,6 +46,7 @@ urlpatterns = [
 
     ### ===== Transfer =====
     path("transfers/", views.TransferListCreateView.as_view(), name="transfer-list-create"),
+    path("transfers/bulk/", views.TransferBulkCreateView.as_view(), name="transfer-bulk-create"),
     path("transfers/<int:pk>/", views.TransferUpdateView.as_view(), name="transfer-update"),
     path("transfers/<int:pk>/delete/", views.TransferDeleteView.as_view(), name="transfer-delete"),
 

@@ -155,6 +155,8 @@ class Product(AuditModel):
     reviewer= models.ForeignKey(Reviewer,   on_delete=models.SET_NULL, null=True, blank=True)
 
     is_direct_product = models.BooleanField(default=False)
+    price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Price ($)")
+    price_omr = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Price (OMR)")
 
     def __str__(self):
         return self.title_ar or self.isbn

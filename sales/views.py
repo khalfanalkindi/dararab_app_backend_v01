@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from django.db.models import Sum, Count, Avg, F, Q
 from inventory.models import Product
 from datetime import datetime
+from django.utils import timezone
 
 from .models import Customer, Invoice, InvoiceItem, Payment, Return
 from .serializers import (
@@ -194,7 +195,7 @@ class InvoiceSummaryView(generics.RetrieveAPIView):
     def get_queryset(self):
         return super().get_queryset().select_related(
             'customer',
-            'customer__type',
+            'customer__customer_type',
             'warehouse',
             'invoice_type',
             'payment_method',
@@ -226,8 +227,17 @@ class WarehouseDashboardView(APIView):
         end_date = end_date.strip()
 
         try:
-            start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            # Parse date strings to date objects
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+            
+            # Convert to timezone-aware datetimes
+            start_date_dt = timezone.make_aware(
+                datetime.combine(start_date_obj, datetime.min.time())
+            )
+            end_date_dt = timezone.make_aware(
+                datetime.combine(end_date_obj, datetime.max.time())
+            )
         except ValueError as e:
             print("Date parsing error:", e)
             return Response(
@@ -237,8 +247,8 @@ class WarehouseDashboardView(APIView):
 
         invoices = Invoice.objects.filter(
             warehouse_id=warehouse_id,
-            created_at__date__gte=start_date_dt,
-            created_at__date__lte=end_date_dt
+            created_at__gte=start_date_dt,
+            created_at__lte=end_date_dt
         )
 
         total_income = InvoiceItem.objects.filter(

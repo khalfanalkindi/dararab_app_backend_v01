@@ -8,8 +8,8 @@ from .models import Customer, Invoice, InvoiceItem, Payment, Return
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display = ('id', 'institution_name', 'type', 'contact_person', 'phone', 'email', 'created_at')
-    list_filter = ('type', 'created_at')
+    list_display = ('id', 'institution_name', 'customer_type', 'contact_person', 'phone', 'email', 'created_at')
+    list_filter = ('customer_type', 'created_at')
     search_fields = ('institution_name', 'contact_person', 'phone', 'email')
     readonly_fields = ('created_by', 'updated_by', 'created_at', 'updated_at')
     

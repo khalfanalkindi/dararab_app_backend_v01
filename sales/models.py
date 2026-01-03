@@ -24,7 +24,7 @@ class AuditModel(models.Model):
 
 # 👤 Customer
 class Customer(AuditModel):
-    type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name="customer_type")
+    customer_type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, blank=True, related_name="customers", limit_choices_to={'list_type__code': 'customer_type'})
     institution_name = models.CharField(max_length=255)
     contact_person = models.CharField(max_length=255, null=True, blank=True)
     phone = models.CharField(max_length=20, null=True, blank=True)

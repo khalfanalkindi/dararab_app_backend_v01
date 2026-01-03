@@ -197,6 +197,8 @@ class ProductSerializer(serializers.ModelSerializer):
             "genre_id", "status_id", "language_id",
 
             "is_direct_product",
+            "price",
+            "price_omr",
             "created_by",
             "updated_by",
             "created_at",
@@ -662,7 +664,7 @@ class ProductSummarySerializer(serializers.ModelSerializer):
             'genre_name', 'status_name', 'language_name',
             'author_name', 'translator_name',
             'editions_count', 'stock',
-            'latest_price', 'latest_price_omr', "cover_design_url"
+            'latest_price', 'latest_price_omr', 'price', 'price_omr', "cover_design_url"
         ]
     
     def get_cover_design_url(self, obj):

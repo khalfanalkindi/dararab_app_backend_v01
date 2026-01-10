@@ -10,11 +10,12 @@ from django.db.models import Sum, Count, Avg, F, Q
 from inventory.models import Product
 from datetime import datetime
 from django.utils import timezone
+from decimal import Decimal
 
-from .models import Customer, Invoice, InvoiceItem, Payment, Return
+from .models import Customer, Invoice, InvoiceItem, Payment, Return, ProductSalesStats
 from .serializers import (
     CustomerSerializer, InvoiceFilter, InvoiceSerializer, InvoiceItemSerializer, InvoiceSummarySerializer,
-    PaymentSerializer, ReturnSerializer
+    PaymentSerializer, ReturnSerializer, ProductSalesStatsSerializer
 )
 
 # Shared delete view
@@ -630,4 +631,330 @@ class InvoiceDetailDebugView(APIView):
             return Response(
                 {"error": f"Invoice with ID {invoice_id} not found"}, 
                 status=404
+            )
+
+# ======== Product Sales Statistics ========
+class ProductSalesStatsListView(generics.ListAPIView):
+    """Get all product sales statistics"""
+    queryset = ProductSalesStats.objects.select_related('product').all().order_by('-sold', '-actual')
+    serializer_class = ProductSalesStatsSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [drf_filters.SearchFilter]
+    search_fields = ['product__title_ar', 'product__title_en', 'product__isbn']
+
+class ProductSalesStatsDetailView(generics.RetrieveAPIView):
+    """Get sales statistics for a specific product"""
+    queryset = ProductSalesStats.objects.select_related('product').all()
+    serializer_class = ProductSalesStatsSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_object(self):
+        """Get ProductSalesStats by product_id from URL"""
+        product_id = self.kwargs.get('product_id')
+        try:
+            return ProductSalesStats.objects.select_related('product').get(product_id=product_id)
+        except ProductSalesStats.DoesNotExist:
+            from rest_framework.exceptions import NotFound
+            raise NotFound(detail=f"No ProductSalesStats found for product ID {product_id}. Run recalculate endpoint first.")
+
+class ProductSalesStatsRecalculateView(APIView):
+    """Recalculate sales statistics for a specific product"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, product_id):
+        try:
+            from inventory.models import Product
+            product = Product.objects.get(id=product_id)
+            stats = ProductSalesStats.calculate_for_product(product)
+            serializer = ProductSalesStatsSerializer(stats)
+            return Response({
+                "message": "Statistics recalculated successfully",
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
+        except Product.DoesNotExist:
+            return Response(
+                {"error": f"Product with ID {product_id} not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+class ProductSalesStatsRecalculateAllView(APIView):
+    """Recalculate sales statistics for all products"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            updated_count = ProductSalesStats.recalculate_all()
+            return Response({
+                "message": f"Statistics recalculated for {updated_count} products",
+                "updated_count": updated_count
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+class CalculateRoyaltiesView(APIView):
+    """
+    Calculate royalties for a contract/project and product.
+    
+    Input: contract_id OR project_id (at least one is required)
+    
+    Logic:
+    - If contract_id provided: get contract → get project → get product
+    - If project_id provided: get project → get product, get contract (if exists)
+    - If both provided: use contract_id (more specific)
+    
+    Calculation:
+    1. X = fixed_amount / (commission_percent / price)
+    2. Compare X with actual (paid books) from ProductSalesStats
+    3. If X > actual: return eligible=False
+    4. If X <= actual:
+       - Y = actual - X - free_copies
+       - Check royalties_type:
+         - list_price (id=52): RA = Y × price × (commission_percent/100)
+         - retail_price (id=53): RA = Y × average(total_price) × (commission_percent/100)
+    
+    Returns: {eligible: bool, RA: decimal or null}
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        contract_id = request.data.get('contract_id')
+        project_id = request.data.get('project_id')
+        
+        # At least one must be provided
+        if not contract_id and not project_id:
+            return Response(
+                {"error": "Either contract_id or project_id is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            from inventory.models import Contract, Product, Project
+            from django.db.models import Avg
+            
+            contract = None
+            project = None
+            product = None
+            
+            # Priority: contract_id > project_id
+            if contract_id:
+                # Get contract and derive project/product from it
+                contract = Contract.objects.select_related(
+                    'project', 'royalties_type'
+                ).get(id=contract_id)
+                project = contract.project
+                
+                # Get product from project
+                # Project can be converted to product, so check if product exists for this project
+                try:
+                    product = Product.objects.get(project=project)
+                except Product.DoesNotExist:
+                    return Response(
+                        {"error": f"No product found for project ID {project.id}. Project must be converted to product first."},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                except Product.MultipleObjectsReturned:
+                    # If multiple products, get the first one (or you might want to return an error)
+                    product = Product.objects.filter(project=project).first()
+                    
+            elif project_id:
+                # Get project and derive product from it
+                project = Project.objects.get(id=project_id)
+                
+                # Get product from project
+                try:
+                    product = Product.objects.get(project=project)
+                except Product.DoesNotExist:
+                    return Response(
+                        {"error": f"No product found for project ID {project_id}. Project must be converted to product first."},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                except Product.MultipleObjectsReturned:
+                    product = Product.objects.filter(project=project).first()
+                
+                # Try to get contract for this project (optional, but needed for calculation)
+                contract = Contract.objects.filter(project=project).first()
+                if not contract:
+                    return Response(
+                        {"error": f"No contract found for project ID {project_id}. Contract is required for calculation."},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+            
+            # Get ProductSalesStats for actual (paid books)
+            # If not found, automatically calculate it
+            try:
+                stats = ProductSalesStats.objects.get(product=product)
+                actual_paid = stats.actual
+            except ProductSalesStats.DoesNotExist:
+                # Auto-recalculate stats for this product if they don't exist
+                try:
+                    stats = ProductSalesStats.calculate_for_product(product)
+                    actual_paid = stats.actual
+                except Exception as e:
+                    return Response(
+                        {"error": f"Failed to calculate sales statistics for product ID {product.id}: {str(e)}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            
+            # Get PrintRun for this product to get the price
+            # A product can have multiple PrintRuns (different editions), so get the latest one
+            from inventory.models import PrintRun
+            print_run = PrintRun.objects.filter(product=product).order_by('-edition_number', '-published_at').first()
+            
+            if not print_run:
+                return Response(
+                    {"error": f"No PrintRun found for product ID {product.id}. PrintRun is required to get price."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Validate required fields
+            if contract.fixed_amount is None:
+                return Response(
+                    {"error": "Contract fixed_amount (advance payment) is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if contract.commission_percent is None or contract.commission_percent == 0:
+                return Response(
+                    {"error": "Contract commission_percent (royalty percentage) is required and must be > 0"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if print_run.price is None or print_run.price == 0:
+                return Response(
+                    {"error": f"PrintRun price is required and must be > 0 for PrintRun ID {print_run.id}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Step 1: Calculate X = fixed_amount / (commission_percent / price)
+            # This simplifies to: X = fixed_amount × (price / commission_percent)
+            # commission_percent is stored as percentage whole number (e.g., 5.00 for 5%)
+            commission_percent_value = Decimal(str(contract.commission_percent))
+            price_value = Decimal(str(print_run.price))
+            fixed_amount_value = Decimal(str(contract.fixed_amount))
+            
+            # X = fixed_amount / (commission_percent / price)
+            # X = fixed_amount × (price / commission_percent)
+            # Note: commission_percent is used as-is (e.g., 5.00), not divided by 100 here
+            X = fixed_amount_value * (price_value / commission_percent_value)
+            # Convert X to int if it's a whole number (it represents count of books)
+            # Remove decimal places for display if it's a whole number
+            X_float = float(X)
+            X_int = int(X_float) if X_float.is_integer() else X_float
+            
+            # Step 2: Compare X with actual (paid books)
+            if X > actual_paid:
+                return Response({
+                    "eligible": False,
+                    "RA": None,
+                    "reason": f"X ({X_int}) is greater than actual paid books ({actual_paid})",
+                    "details": {
+                        "X": X_int,
+                        "actual_paid": actual_paid,
+                        "fixed_amount": float(contract.fixed_amount),
+                        "commission_percent": float(contract.commission_percent),
+                        "price": float(print_run.price),
+                        "print_run_id": print_run.id,
+                        "edition_number": print_run.edition_number
+                    }
+                }, status=status.HTTP_200_OK)
+            
+            # Step 3: Calculate Y = actual - X - free_copies
+            free_copies = contract.free_copies or 0
+            Y = actual_paid - X - free_copies
+            # Convert Y to int if it's a whole number (it represents count of books)
+            Y_float = float(Y)
+            Y_int = int(Y_float) if Y_float.is_integer() else Y_float
+            
+            # If Y is negative or zero, no royalties
+            if Y <= 0:
+                return Response({
+                    "eligible": False,
+                    "RA": None,
+                    "reason": f"Y ({Y_int}) is less than or equal to 0 after subtracting X and free copies",
+                    "details": {
+                        "X": X_int,
+                        "actual_paid": actual_paid,
+                        "free_copies": free_copies,
+                        "Y": Y_int
+                    }
+                }, status=status.HTTP_200_OK)
+            
+            # Step 4: Check royalties_type and calculate RA
+            if not contract.royalties_type:
+                return Response(
+                    {"error": "Contract royalties_type is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            royalties_type_id = contract.royalties_type.id
+            
+            # Calculate RA based on royalties_type
+            # commission_percent is stored as percentage whole number (e.g., 5.00 for 5%)
+            # So we divide by 100 to get decimal form (0.05)
+            commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
+            
+            if royalties_type_id == 52:  # list_price
+                # RA = Y × price × (commission_percent/100)
+                RA = Y * price_value * commission_as_decimal
+                
+            elif royalties_type_id == 53:  # retail_price
+                # RA = Y × average(total_price) × (commission_percent/100)
+                # Get average of InvoiceItem.total_price for this product
+                avg_total_price = InvoiceItem.objects.filter(
+                    product=product
+                ).aggregate(avg=Avg('total_price'))['avg']
+                
+                if avg_total_price is None or avg_total_price == 0:
+                    return Response(
+                        {"error": "No invoice items found for this product to calculate average total price"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                RA = Y * Decimal(str(avg_total_price)) * commission_as_decimal
+            else:
+                return Response(
+                    {"error": f"Invalid royalties_type ID {royalties_type_id}. Expected 52 (list_price) or 53 (retail_price)"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            return Response({
+                "eligible": True,
+                "RA": float(RA.quantize(Decimal('0.01'))),
+                "details": {
+                    "X": X_int,
+                    "Y": Y_int,
+                    "actual_paid": actual_paid,
+                    "free_copies": free_copies,
+                    "royalties_type_id": royalties_type_id,
+                    "royalties_type": contract.royalties_type.value if contract.royalties_type else None,
+                    "commission_percent": float(contract.commission_percent),
+                    "price": float(print_run.price) if royalties_type_id == 52 else None,
+                    "print_run_id": print_run.id if royalties_type_id == 52 else None,
+                    "edition_number": print_run.edition_number if royalties_type_id == 52 else None,
+                    "avg_total_price": float(avg_total_price) if royalties_type_id == 53 else None
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Contract.DoesNotExist:
+            return Response(
+                {"error": f"Contract with ID {contract_id} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Project.DoesNotExist:
+            return Response(
+                {"error": f"Project with ID {project_id} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
             )

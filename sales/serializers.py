@@ -5,7 +5,7 @@ from datetime import datetime
 
 from common.models import ListItem
 from inventory.models import Warehouse
-from .models import Customer, Invoice, InvoiceItem, Payment, Return
+from .models import Customer, Invoice, InvoiceItem, Payment, Return, ProductSalesStats
 from django.db.models import Sum
 from decimal import Decimal
 
@@ -419,3 +419,14 @@ class InvoiceSummarySerializer(serializers.ModelSerializer):
 
     def get_created_at_formatted(self, obj):
         return obj.created_at.strftime("%Y-%m-%d %H:%M:%S")
+
+
+class ProductSalesStatsSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source='product.id', read_only=True)
+    product_title_ar = serializers.CharField(source='product.title_ar', read_only=True)
+    product_title_en = serializers.CharField(source='product.title_en', read_only=True)
+    
+    class Meta:
+        model = ProductSalesStats
+        fields = ['id', 'product_id', 'product_title_ar', 'product_title_en', 'sold', 'actual', 'created_at', 'updated_at']
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']

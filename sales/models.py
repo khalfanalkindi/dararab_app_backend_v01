@@ -87,7 +87,33 @@ class Invoice(AuditModel):
 
     @property
     def total_amount(self) -> Decimal:
-        """Grand total after global discount and tax (backwards-compatible name)."""
+        """
+        Grand total after global discount and tax (backwards-compatible name).
+        
+        IMPORTANT: For store customers, global discount is already divided and applied
+        to each item's total_price. So we should use the sum of item total_price directly
+        to avoid double-applying the discount.
+        
+        For individual customers, global discount is NOT applied to items, so we need
+        to apply it at the invoice level.
+        """
+        # Check customer type to determine calculation method
+        customer_type_value = None
+        if self.customer and self.customer.customer_type:
+            # Try to get the value field from the customer_type ListItem
+            try:
+                customer_type_value = self.customer.customer_type.value
+            except:
+                pass
+        
+        # For store customers: global discount is already in item total_price
+        # So just sum the items (they already have discount applied)
+        if customer_type_value == 'store':
+            # Sum of item total_price (discount already applied to items)
+            return sum((item.total_price for item in self.invoiceitem_set.all()), Decimal('0.00')).quantize(Decimal('0.01'))
+        
+        # For individual customers: global discount is NOT in item total_price
+        # So apply global discount and tax at invoice level
         return (self.discounted_subtotal + self.tax_amount).quantize(Decimal('0.01'))
 
     @property
@@ -388,3 +414,89 @@ class Return(AuditModel):
     def __str__(self):
         item_str = str(self.invoice_item) if self.invoice_item else "Unknown Item"
         return f"Returned {self.returned_quantity} of {item_str}"
+
+# 📊 Product Sales Statistics
+class ProductSalesStats(AuditModel):
+    """
+    Stores aggregated sales statistics per product.
+    - sold: Total number of books invoiced (sold but may not be paid)
+    - actual: Total number of books actually paid for
+    """
+    product = models.OneToOneField(Product, on_delete=models.CASCADE, related_name='sales_stats')
+    sold = models.IntegerField(default=0, help_text="Total books sold (invoiced)")
+    actual = models.IntegerField(default=0, help_text="Total books actually paid for")
+    
+    class Meta:
+        verbose_name = "Product Sales Statistics"
+        verbose_name_plural = "Product Sales Statistics"
+        indexes = [
+            models.Index(fields=['product']),
+        ]
+    
+    def __str__(self):
+        product_name = str(self.product) if self.product else "Unknown Product"
+        return f"{product_name} - Sold: {self.sold}, Actual: {self.actual}"
+    
+    @classmethod
+    def calculate_for_product(cls, product):
+        """
+        Calculate and update sales stats for a specific product.
+        This aggregates data from all InvoiceItems for this product.
+        """
+        from django.db.models import Sum, F
+        from math import floor
+        
+        # Get all invoice items for this product
+        items = InvoiceItem.objects.filter(product=product)
+        
+        # Calculate total sold (sum of all quantities)
+        total_sold = items.aggregate(total=Sum('quantity'))['total'] or 0
+        
+        # Calculate total actual (paid books)
+        # For each item: if fully paid, count all quantity
+        # If partially paid, calculate proportion: (paid_amount / total_price) * quantity
+        total_actual = 0
+        for item in items:
+            if item.total_price > 0:
+                # Calculate paid proportion
+                paid_proportion = float(item.paid_amount) / float(item.total_price)
+                # Calculate how many books are paid (round down to be conservative)
+                paid_quantity = floor(paid_proportion * item.quantity)
+                total_actual += paid_quantity
+            elif item.is_paid:
+                # If total_price is 0 but marked as paid, count all quantity
+                total_actual += item.quantity
+        
+        # Get or create the stats record
+        stats, created = cls.objects.get_or_create(
+            product=product,
+            defaults={
+                'sold': total_sold,
+                'actual': total_actual,
+            }
+        )
+        
+        # Update if it already exists
+        if not created:
+            stats.sold = total_sold
+            stats.actual = total_actual
+            stats.save(update_fields=['sold', 'actual', 'updated_at'])
+        
+        return stats
+    
+    @classmethod
+    def recalculate_all(cls):
+        """Recalculate stats for all products that have invoice items."""
+        from inventory.models import Product
+        
+        # Get all products that have invoice items
+        products_with_sales = Product.objects.filter(
+            invoiceitem__isnull=False
+        ).distinct()
+        
+        updated_count = 0
+        for product in products_with_sales:
+            cls.calculate_for_product(product)
+            updated_count += 1
+        
+        return updated_count

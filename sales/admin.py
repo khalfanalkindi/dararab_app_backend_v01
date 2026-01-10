@@ -3,7 +3,7 @@ from django.utils.html import format_html
 from django.db.models import Sum, F
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from .models import Customer, Invoice, InvoiceItem, Payment, Return
+from .models import Customer, Invoice, InvoiceItem, Payment, Return, ProductSalesStats
 
 
 @admin.register(Customer)
@@ -290,6 +290,58 @@ class ReturnAdmin(admin.ModelAdmin):
             return format_html('<a href="{}">Item {}</a>', url, obj.invoice_item.id)
         return '-'
     invoice_item_link.short_description = 'Invoice Item'
+    
+    def save_model(self, request, obj, form, change):
+        if not change:  # New object
+            obj.created_by = request.user
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(ProductSalesStats)
+class ProductSalesStatsAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'product_link', 'product_title', 'sold', 'actual', 
+        'difference_display', 'updated_at'
+    )
+    list_filter = ('created_at', 'updated_at')
+    search_fields = ('product__title_ar', 'product__title_en', 'product__isbn')
+    readonly_fields = ('product', 'sold', 'actual', 'created_by', 'updated_by', 'created_at', 'updated_at')
+    actions = ['recalculate_stats']
+    
+    def product_link(self, obj):
+        if obj.product:
+            url = reverse('admin:inventory_product_change', args=[obj.product.id])
+            return format_html('<a href="{}">{}</a>', url, obj.product.id)
+        return '-'
+    product_link.short_description = 'Product ID'
+    
+    def product_title(self, obj):
+        return obj.product.title_ar if obj.product else '-'
+    product_title.short_description = 'Product Title'
+    
+    def difference_display(self, obj):
+        diff = obj.sold - obj.actual
+        if diff == 0:
+            color = 'green'
+        elif diff > 0:
+            color = 'orange'
+        else:
+            color = 'red'
+        return format_html(
+            '<span style="color: {};">{}</span>',
+            color, diff
+        )
+    difference_display.short_description = 'Unpaid Books'
+    
+    def recalculate_stats(self, request, queryset):
+        updated_count = 0
+        for stats in queryset:
+            if stats.product:
+                ProductSalesStats.calculate_for_product(stats.product)
+                updated_count += 1
+        self.message_user(request, f"Statistics recalculated for {updated_count} products.")
+    recalculate_stats.short_description = "Recalculate statistics for selected products"
     
     def save_model(self, request, obj, form, change):
         if not change:  # New object

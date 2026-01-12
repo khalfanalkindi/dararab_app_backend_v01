@@ -718,7 +718,11 @@ class CalculateRoyaltiesView(APIView):
        - Y = actual - X - free_copies
        - Check royalties_type:
          - list_price (id=52): RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
-         - retail_price (id=53): RA = Y × sum(total_price) × (commission_percent/100)
+         - retail_price (id=53): 
+           * Get sum(actual paid amount) from InvoiceItems
+           * Compare with advance payment (fixed_amount)
+           * If sum < fixed_amount: return eligible=false
+           * If sum >= fixed_amount: Z = sum - fixed_amount, RA = Z × (commission_percent/100)
     
     Returns: {eligible: bool, RA: decimal or null}
     """
@@ -833,6 +837,73 @@ class CalculateRoyaltiesView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
+            # Check royalties_type first - retail_price has different calculation logic
+            if not contract.royalties_type:
+                return Response(
+                    {"error": "Contract royalties_type is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            royalties_type_id = contract.royalties_type.id
+            
+            # Handle retail_price (id=53) separately - different calculation path
+            if royalties_type_id == 53:  # retail_price
+                # Get sum of invoice_paid_amount from Payment table
+                # Get all invoices that have InvoiceItems for this product
+                invoices_with_product = Invoice.objects.filter(
+                    invoiceitem__product=product
+                ).distinct()
+                
+                # Get the latest payment for each invoice and sum their invoice_paid_amount
+                # This gives us the total paid amount for each invoice (not double counting)
+                sum_paid_amount = Decimal('0')
+                for invoice in invoices_with_product:
+                    latest_payment = Payment.objects.filter(
+                        invoice=invoice
+                    ).order_by('-created_at', '-id').first()
+                    if latest_payment and latest_payment.invoice_paid_amount:
+                        sum_paid_amount += Decimal(str(latest_payment.invoice_paid_amount))
+                
+                # Compare with advance payment (fixed_amount)
+                fixed_amount_value = Decimal(str(contract.fixed_amount))
+                
+                if sum_paid_amount < fixed_amount_value:
+                    return Response({
+                        "eligible": False,
+                        "RA": None,
+                        "reason": f"Sum of paid amount ({float(sum_paid_amount)}) is less than advance payment ({float(fixed_amount_value)})",
+                        "details": {
+                            "sum_paid_amount": float(sum_paid_amount),
+                            "fixed_amount": float(fixed_amount_value),
+                            "royalties_type_id": royalties_type_id,
+                            "royalties_type": contract.royalties_type.value
+                        }
+                    }, status=status.HTTP_200_OK)
+                
+                # Calculate Z = sum - advance payment
+                Z = sum_paid_amount - fixed_amount_value
+                Z_float = float(Z)
+                Z_int = int(Z_float) if Z_float.is_integer() else Z_float
+                
+                # Calculate RA = Z × (commission_percent/100)
+                commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
+                RA = Z * commission_as_decimal
+                
+                return Response({
+                    "eligible": True,
+                    "RA": float(RA.quantize(Decimal('0.01'))),
+                    "currency": "$",
+                    "details": {
+                        "sum_paid_amount": float(sum_paid_amount),
+                        "fixed_amount": float(fixed_amount_value),
+                        "Z": Z_int,
+                        "commission_percent": float(contract.commission_percent),
+                        "royalties_type_id": royalties_type_id,
+                        "royalties_type": contract.royalties_type.value
+                    }
+                }, status=status.HTTP_200_OK)
+            
+            # For list_price (id=52), continue with the existing X, Y calculation
             # Step 1: Calculate X = fixed_amount / (commission_percent / price)
             # This simplifies to: X = fixed_amount × (price / commission_percent)
             # commission_percent is stored as percentage whole number (e.g., 5.00 for 5%)
@@ -867,7 +938,13 @@ class CalculateRoyaltiesView(APIView):
                 }, status=status.HTTP_200_OK)
             
             # Step 3: Calculate Y = actual - X - free_copies
-            free_copies = contract.free_copies or 0
+            # Sum free_copies from ALL contracts for this project/product
+            # A product can have multiple contracts, and we need to account for all free copies
+            all_contracts = Contract.objects.filter(project=project)
+            free_copies = sum(
+                (c.free_copies or 0 for c in all_contracts),
+                0
+            )
             Y = actual_paid - X - free_copies
             # Convert Y to int if it's a whole number (it represents count of books)
             Y_float = float(Y)
@@ -887,23 +964,13 @@ class CalculateRoyaltiesView(APIView):
                     }
                 }, status=status.HTTP_200_OK)
             
-            # Step 4: Check royalties_type and calculate RA
-            if not contract.royalties_type:
-                return Response(
-                    {"error": "Contract royalties_type is required"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            royalties_type_id = contract.royalties_type.id
-            
-            # Calculate RA based on royalties_type
+            # Step 4: Calculate RA for list_price (id=52)
             # commission_percent is stored as percentage whole number (e.g., 5.00 for 5%)
             # So we divide by 100 to get decimal form (0.05)
             commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
             
             # Initialize variables for response
             sum_price_transactions = None
-            sum_total_price = None
             
             if royalties_type_id == 52:  # list_price
                 # RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
@@ -952,21 +1019,6 @@ class CalculateRoyaltiesView(APIView):
                 
                 # RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
                 RA = Y * sum_price_transactions * commission_as_decimal
-                
-            elif royalties_type_id == 53:  # retail_price
-                # RA = Y × sum(total_price) × (commission_percent/100)
-                # Get sum of InvoiceItem.total_price for this product
-                sum_total_price = InvoiceItem.objects.filter(
-                    product=product
-                ).aggregate(total=Sum('total_price'))['total']
-                
-                if sum_total_price is None or sum_total_price == 0:
-                    return Response(
-                        {"error": "No invoice items found for this product to calculate sum of total price"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                RA = Y * Decimal(str(sum_total_price)) * commission_as_decimal
             else:
                 return Response(
                     {"error": f"Invalid royalties_type ID {royalties_type_id}. Expected 52 (list_price) or 53 (retail_price)"},
@@ -976,6 +1028,7 @@ class CalculateRoyaltiesView(APIView):
             return Response({
                 "eligible": True,
                 "RA": float(RA.quantize(Decimal('0.01'))),
+                "currency": "$",
                 "details": {
                     "X": X_int,
                     "Y": Y_int,
@@ -984,8 +1037,7 @@ class CalculateRoyaltiesView(APIView):
                     "royalties_type_id": royalties_type_id,
                     "royalties_type": contract.royalties_type.value if contract.royalties_type else None,
                     "commission_percent": float(contract.commission_percent),
-                    "sum_price_transactions": float(sum_price_transactions) if royalties_type_id == 52 else None,
-                    "sum_total_price": float(sum_total_price) if royalties_type_id == 53 else None
+                    "sum_price_transactions": float(sum_price_transactions) if royalties_type_id == 52 else None
                 }
             }, status=status.HTTP_200_OK)
             

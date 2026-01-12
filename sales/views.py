@@ -717,8 +717,8 @@ class CalculateRoyaltiesView(APIView):
     4. If X <= actual:
        - Y = actual - X - free_copies
        - Check royalties_type:
-         - list_price (id=52): RA = Y × price × (commission_percent/100)
-         - retail_price (id=53): RA = Y × average(total_price) × (commission_percent/100)
+         - list_price (id=52): RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
+         - retail_price (id=53): RA = Y × sum(total_price) × (commission_percent/100)
     
     Returns: {eligible: bool, RA: decimal or null}
     """
@@ -901,24 +901,72 @@ class CalculateRoyaltiesView(APIView):
             # So we divide by 100 to get decimal form (0.05)
             commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
             
+            # Initialize variables for response
+            sum_price_transactions = None
+            sum_total_price = None
+            
             if royalties_type_id == 52:  # list_price
-                # RA = Y × price × (commission_percent/100)
-                RA = Y * price_value * commission_as_decimal
+                # RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
+                # Get all PrintRuns for this product
+                print_runs = PrintRun.objects.filter(product=product).order_by('published_at', 'edition_number')
                 
-            elif royalties_type_id == 53:  # retail_price
-                # RA = Y × average(total_price) × (commission_percent/100)
-                # Get average of InvoiceItem.total_price for this product
-                avg_total_price = InvoiceItem.objects.filter(
-                    product=product
-                ).aggregate(avg=Avg('total_price'))['avg']
-                
-                if avg_total_price is None or avg_total_price == 0:
+                if not print_runs.exists():
                     return Response(
-                        {"error": "No invoice items found for this product to calculate average total price"},
+                        {"error": "No PrintRuns found for this product. PrintRuns are required for list_price calculation."},
                         status=status.HTTP_400_BAD_REQUEST
                     )
                 
-                RA = Y * Decimal(str(avg_total_price)) * commission_as_decimal
+                # Calculate sum of (printrun.price × number_of_transactions) for each PrintRun
+                # For each PrintRun, count InvoiceItems created on or after its published_at date
+                # and before the next PrintRun's published_at (or current date if it's the latest)
+                from django.utils import timezone
+                from datetime import datetime
+                
+                sum_price_transactions = Decimal('0')
+                
+                for i, print_run in enumerate(print_runs):
+                    # Get the start date (this PrintRun's published_at)
+                    start_date = timezone.make_aware(
+                        datetime.combine(print_run.published_at, datetime.min.time())
+                    )
+                    
+                    # Get the end date (next PrintRun's published_at, or current date if last)
+                    if i + 1 < len(print_runs):
+                        next_print_run = print_runs[i + 1]
+                        end_date = timezone.make_aware(
+                            datetime.combine(next_print_run.published_at, datetime.min.time())
+                        )
+                    else:
+                        # Last PrintRun - use current date
+                        end_date = timezone.now()
+                    
+                    # Count InvoiceItems for this product created in this date range
+                    transaction_count = InvoiceItem.objects.filter(
+                        product=product,
+                        created_at__gte=start_date,
+                        created_at__lt=end_date
+                    ).count()
+                    
+                    # Add: printrun.price × transaction_count
+                    sum_price_transactions += Decimal(str(print_run.price)) * Decimal(str(transaction_count))
+                
+                # RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
+                RA = Y * sum_price_transactions * commission_as_decimal
+                
+            elif royalties_type_id == 53:  # retail_price
+                # RA = Y × sum(total_price) × (commission_percent/100)
+                # Get sum of InvoiceItem.total_price for this product
+                sum_total_price = InvoiceItem.objects.filter(
+                    product=product
+                ).aggregate(total=Sum('total_price'))['total']
+                
+                if sum_total_price is None or sum_total_price == 0:
+                    return Response(
+                        {"error": "No invoice items found for this product to calculate sum of total price"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                RA = Y * Decimal(str(sum_total_price)) * commission_as_decimal
             else:
                 return Response(
                     {"error": f"Invalid royalties_type ID {royalties_type_id}. Expected 52 (list_price) or 53 (retail_price)"},
@@ -936,10 +984,8 @@ class CalculateRoyaltiesView(APIView):
                     "royalties_type_id": royalties_type_id,
                     "royalties_type": contract.royalties_type.value if contract.royalties_type else None,
                     "commission_percent": float(contract.commission_percent),
-                    "price": float(print_run.price) if royalties_type_id == 52 else None,
-                    "print_run_id": print_run.id if royalties_type_id == 52 else None,
-                    "edition_number": print_run.edition_number if royalties_type_id == 52 else None,
-                    "avg_total_price": float(avg_total_price) if royalties_type_id == 53 else None
+                    "sum_price_transactions": float(sum_price_transactions) if royalties_type_id == 52 else None,
+                    "sum_total_price": float(sum_total_price) if royalties_type_id == 53 else None
                 }
             }, status=status.HTTP_200_OK)
             

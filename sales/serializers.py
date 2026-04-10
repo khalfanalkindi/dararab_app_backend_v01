@@ -1,9 +1,11 @@
 from rest_framework import serializers
 from django_filters import rest_framework as filters
+from django.utils import timezone
+from datetime import datetime
 
 from common.models import ListItem
 from inventory.models import Warehouse
-from .models import Customer, Invoice, InvoiceItem, Payment, Return
+from .models import Customer, Invoice, InvoiceItem, Payment, Return, ProductSalesStats
 from django.db.models import Sum
 from decimal import Decimal
 
@@ -139,8 +141,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
     
 class InvoiceFilter(filters.FilterSet):
     created_at = filters.DateFilter(field_name="created_at", lookup_expr="date")
-    start_date = filters.DateFilter(field_name="created_at", lookup_expr='gte')
-    end_date = filters.DateFilter(field_name="created_at", lookup_expr='lte')
+    start_date = filters.DateFilter(field_name="created_at", lookup_expr='gte', method='filter_start_date')
+    end_date = filters.DateFilter(field_name="created_at", lookup_expr='lte', method='filter_end_date')
     warehouse_id = filters.NumberFilter(field_name="warehouse__id")
     
     # Payment status filters
@@ -205,6 +207,50 @@ class InvoiceFilter(filters.FilterSet):
             return queryset.filter(main_invoice__isnull=False)
         elif value == 'all':
             return queryset
+        return queryset
+    
+    def filter_start_date(self, queryset, name, value):
+        """
+        Filter by start_date with timezone-aware datetime.
+        Converts date string to timezone-aware datetime at start of day.
+        """
+        if value:
+            # Parse the date string and make it timezone-aware at start of day
+            if isinstance(value, str):
+                try:
+                    date_obj = datetime.strptime(value, "%Y-%m-%d").date()
+                except ValueError:
+                    return queryset
+            else:
+                date_obj = value
+            
+            # Make timezone-aware datetime at start of day
+            start_datetime = timezone.make_aware(
+                datetime.combine(date_obj, datetime.min.time())
+            )
+            return queryset.filter(created_at__gte=start_datetime)
+        return queryset
+    
+    def filter_end_date(self, queryset, name, value):
+        """
+        Filter by end_date with timezone-aware datetime.
+        Converts date string to timezone-aware datetime at end of day.
+        """
+        if value:
+            # Parse the date string and make it timezone-aware at end of day
+            if isinstance(value, str):
+                try:
+                    date_obj = datetime.strptime(value, "%Y-%m-%d").date()
+                except ValueError:
+                    return queryset
+            else:
+                date_obj = value
+            
+            # Make timezone-aware datetime at end of day (23:59:59.999999)
+            end_datetime = timezone.make_aware(
+                datetime.combine(date_obj, datetime.max.time())
+            )
+            return queryset.filter(created_at__lte=end_datetime)
         return queryset
 
 class InvoiceItemSerializer(serializers.ModelSerializer):
@@ -286,7 +332,7 @@ class ReturnSerializer(serializers.ModelSerializer):
 
 class InvoiceSummarySerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.institution_name', allow_null=True, default='No Customer')
-    customer_type = serializers.CharField(source='customer.type', allow_null=True, default='N/A')
+    customer_type = serializers.CharField(source='customer.customer_type.display_name_en', allow_null=True, default='N/A')
     warehouse_name = serializers.CharField(source='warehouse.name_ar', allow_null=True, default='No Warehouse')
     invoice_type_name = serializers.CharField(source='invoice_type.display_name_en', allow_null=True, default='No Type')
     payment_method_name = serializers.CharField(source='payment_method.display_name_en', allow_null=True, default='No Payment Method')
@@ -373,3 +419,14 @@ class InvoiceSummarySerializer(serializers.ModelSerializer):
 
     def get_created_at_formatted(self, obj):
         return obj.created_at.strftime("%Y-%m-%d %H:%M:%S")
+
+
+class ProductSalesStatsSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source='product.id', read_only=True)
+    product_title_ar = serializers.CharField(source='product.title_ar', read_only=True)
+    product_title_en = serializers.CharField(source='product.title_en', read_only=True)
+    
+    class Meta:
+        model = ProductSalesStats
+        fields = ['id', 'product_id', 'product_title_ar', 'product_title_en', 'sold', 'actual', 'created_at', 'updated_at']
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']

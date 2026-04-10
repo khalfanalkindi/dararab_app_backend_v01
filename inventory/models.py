@@ -129,6 +129,16 @@ class Project(AuditModel):
     def __str__(self):
         return self.title_ar
 
+    class Meta:
+        db_table = 'inventory_project'
+        indexes = [
+            models.Index(fields=['approval_status'], name='project_approval_status_idx'),
+            models.Index(fields=['progress_status'], name='project_progress_status_idx'),
+            models.Index(fields=['status'], name='project_status_idx'),
+            models.Index(fields=['created_at'], name='project_created_at_idx'),
+            models.Index(fields=['approval_status', 'progress_status'], name='project_approval_progress_idx'),
+        ]
+
 # 📦 Product
 class Product(AuditModel):
     project= models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True)
@@ -145,6 +155,8 @@ class Product(AuditModel):
     reviewer= models.ForeignKey(Reviewer,   on_delete=models.SET_NULL, null=True, blank=True)
 
     is_direct_product = models.BooleanField(default=False)
+    price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Price ($)")
+    price_omr = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Price (OMR)")
 
     def __str__(self):
         return self.title_ar or self.isbn
@@ -152,8 +164,8 @@ class Product(AuditModel):
 class PrintRun(AuditModel):
     product= models.ForeignKey(Product, on_delete=models.CASCADE, related_name='print_runs', db_index=True)
     edition_number= models.PositiveIntegerField(verbose_name="Edition Number")
-    print_cost= models.DecimalField(max_digits=10, decimal_places=2)
-    price= models.DecimalField(max_digits=10, decimal_places=2)
+    price_omr= models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Price (OMR)")
+    price= models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Price ($)")
     status= models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, related_name='printrun_status')
     published_at= models.DateField()
     notes= models.TextField(blank=True)
@@ -228,6 +240,7 @@ class Contract(AuditModel):
     commission_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     fixed_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     free_copies = models.IntegerField(null=True, blank=True)
+    royalties_type = models.ForeignKey(ListItem, on_delete=models.SET_NULL, null=True, blank=True, related_name='contract_royalties_type')
     contract_duration = models.IntegerField(help_text="The contract in months", null=True, blank=True)
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)

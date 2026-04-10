@@ -49,4 +49,13 @@ urlpatterns = [
     path("invoices/debug/payment-distribution/", views.PaymentDistributionDebugView.as_view(), name="payment-distribution-debug"),
     path("invoices/debug/<int:invoice_id>/", views.InvoiceDetailDebugView.as_view(), name="invoice-detail-debug"),
 
+    # Product Sales Statistics
+    path("product-sales-stats/", views.ProductSalesStatsListView.as_view(), name="product-sales-stats-list"),
+    path("product-sales-stats/<int:product_id>/", views.ProductSalesStatsDetailView.as_view(), name="product-sales-stats-detail"),
+    path("product-sales-stats/<int:product_id>/recalculate/", views.ProductSalesStatsRecalculateView.as_view(), name="product-sales-stats-recalculate"),
+    path("product-sales-stats/recalculate-all/", views.ProductSalesStatsRecalculateAllView.as_view(), name="product-sales-stats-recalculate-all"),
+    
+    # Royalties Calculation
+    path("calculate-royalties/", views.CalculateRoyaltiesView.as_view(), name="calculate-royalties"),
+
 ]

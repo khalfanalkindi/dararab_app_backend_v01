@@ -301,6 +301,20 @@ class WarehouseDashboardView(APIView):
             .order_by('date')
         )
 
+        paid_books = (
+            InvoiceItem.objects.filter(
+                invoice__in=invoices,
+                paid_amount__gt=0,
+                product__isnull=False,
+            )
+            .values('product__id', 'product__title_ar')
+            .annotate(
+                quantity=Sum('quantity'),
+                total_paid=Sum('paid_amount'),
+            )
+            .order_by('-total_paid', 'product__title_ar')
+        )
+
         return Response({
             "total_income": total_income,
             "total_income_without_discount": total_income_without_discount,
@@ -311,6 +325,7 @@ class WarehouseDashboardView(APIView):
             "popular_books": list(popular_books),
             "top_categories": list(top_categories),
             "daily_sales": list(daily_sales),
+            "paid_books": list(paid_books),
         })
 
 class InvoiceChildrenView(generics.ListAPIView):

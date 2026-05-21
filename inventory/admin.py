@@ -171,7 +171,7 @@ class ProjectAdmin(admin.ModelAdmin):
         elif db_field.name == "type":
             kwargs["queryset"] = ListItem.objects.filter(list_type__code="projects_type")
         elif db_field.name == "language":
-            kwargs["queryset"] = ListItem.objects.filter(list_type__code="language")
+            kwargs["queryset"] = ListItem.objects.filter(list_type__code="projects_language")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 # ========== Contract ==========

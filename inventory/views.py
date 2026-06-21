@@ -18,7 +18,7 @@ from .models import (
 )
 from .serializers import (
     POSProductSummarySerializer, PrintRunSerializer, ProductSummarySerializer, ProjectSerializer, ProductSerializer, StakeholderSerializer, WarehouseSerializer,
-    InventorySerializer, TransferSerializer,
+    InventorySerializer, InventoryListSerializer, TransferSerializer,
     AuthorSerializer, TranslatorSerializer, RightsOwnerSerializer,
     ReviewerSerializer, ContractSerializer, PrintTaskSerializer
 )
@@ -760,6 +760,11 @@ class InventoryListCreateView(generics.ListCreateAPIView):
     ordering_fields = ['product', 'warehouse', 'quantity', 'updated_at', 'created_at']
     ordering = ['-created_at', 'id']  # Default ordering
 
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return InventoryListSerializer
+        return InventorySerializer
+
     def get_queryset(self):
         queryset = Inventory.objects.select_related('product', 'warehouse')
         # Support multiple product_id parameters (for multi-select filtering)
@@ -1292,6 +1297,104 @@ class TransferBulkCreateView(APIView):
         else:
             # Partial success
             return Response(response_data, status=status.HTTP_207_MULTI_STATUS)
+
+class TransferPreviewView(APIView):
+    """
+    Return from/to warehouse quantities for a set of products in one request.
+    GET /inventory/transfer-preview/?product_id=1&product_id=2&from_warehouse_id=1&to_warehouse_id=2
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        raw_ids = request.query_params.getlist("product_id")
+        if not raw_ids:
+            csv = request.query_params.get("product_ids", "")
+            if csv:
+                raw_ids = [part.strip() for part in csv.split(",") if part.strip()]
+
+        from_warehouse_id = request.query_params.get("from_warehouse_id")
+        to_warehouse_id = request.query_params.get("to_warehouse_id")
+
+        if not raw_ids:
+            return Response(
+                {"detail": "At least one product_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not from_warehouse_id or not to_warehouse_id:
+            return Response(
+                {"detail": "from_warehouse_id and to_warehouse_id are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            from_id = int(from_warehouse_id)
+            to_id = int(to_warehouse_id)
+        except (ValueError, TypeError):
+            return Response(
+                {"detail": "Warehouse IDs must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if from_id == to_id:
+            return Response(
+                {"detail": "From and to warehouses must be different."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        product_ids: list[int] = []
+        for raw in raw_ids:
+            try:
+                product_ids.append(int(raw))
+            except (ValueError, TypeError):
+                return Response(
+                    {"detail": f"Invalid product_id: {raw}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        product_ids = list(dict.fromkeys(product_ids))
+        if not product_ids:
+            return Response(
+                {"detail": "At least one valid product_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not Warehouse.objects.filter(id__in=[from_id, to_id]).count() == 2:
+            return Response(
+                {"detail": "One or both warehouses were not found."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        products_by_id = {
+            product.id: product
+            for product in Product.objects.filter(id__in=product_ids).only(
+                "id", "title_en", "title_ar"
+            )
+        }
+
+        quantities: dict[tuple[int, int], int] = {}
+        inventory_rows = Inventory.objects.filter(
+            product_id__in=product_ids,
+            warehouse_id__in=[from_id, to_id],
+        ).values("product_id", "warehouse_id", "quantity")
+
+        for row in inventory_rows:
+            quantities[(row["product_id"], row["warehouse_id"])] = row["quantity"] or 0
+
+        results = []
+        for product_id in product_ids:
+            product = products_by_id.get(product_id)
+            if not product:
+                continue
+            results.append(
+                {
+                    "product_id": product_id,
+                    "product_name": product.title_en or product.title_ar or f"Product {product_id}",
+                    "from_quantity": quantities.get((product_id, from_id), 0),
+                    "to_quantity": quantities.get((product_id, to_id), 0),
+                }
+            )
+
+        return Response({"results": results, "count": len(results)})
 
 # ============================== People ==============================
 class AuthorListCreateView(generics.ListCreateAPIView):

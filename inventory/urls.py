@@ -45,6 +45,7 @@ urlpatterns = [
     path("inventory/product/<int:product_id>/delete/", views.InventoryDeleteByProductView.as_view(), name="inventory-delete-by-product"),
 
     ### ===== Transfer =====
+    path("transfer-preview/", views.TransferPreviewView.as_view(), name="transfer-preview"),
     path("transfers/", views.TransferListCreateView.as_view(), name="transfer-list-create"),
     path("transfers/bulk/", views.TransferBulkCreateView.as_view(), name="transfer-bulk-create"),
     path("transfers/<int:pk>/", views.TransferUpdateView.as_view(), name="transfer-update"),

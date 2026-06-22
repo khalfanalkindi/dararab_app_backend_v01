@@ -229,6 +229,37 @@ class PrintRunSerializer(serializers.ModelSerializer):
           'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+
+class ProductBriefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = ["id", "title_en", "title_ar", "isbn"]
+
+
+class WarehouseBriefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Warehouse
+        fields = ["id", "name_en", "name_ar", "location"]
+
+
+class InventoryListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for inventory list/search (no nested full product graph)."""
+    product = ProductBriefSerializer(read_only=True)
+    warehouse = WarehouseBriefSerializer(read_only=True)
+
+    class Meta:
+        model = Inventory
+        fields = [
+            "id",
+            "quantity",
+            "product",
+            "warehouse",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
 class InventorySerializer(serializers.ModelSerializer):
     # Nested read-only representations
     product = ProductSerializer(read_only=True)

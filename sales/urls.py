@@ -30,6 +30,7 @@ urlpatterns = [
 
     path('invoices/<int:pk>/summary/', views.InvoiceSummaryView.as_view(), name='invoice-summary'),
 
+    path('dashboard/', views.DashboardOverviewView.as_view(), name='dashboard-overview'),
     path('warehouse-dashboard/', views.WarehouseDashboardView.as_view(), name='warehouse-dashboard'),
 
     # New invoice filtering endpoints

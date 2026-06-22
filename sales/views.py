@@ -7,8 +7,9 @@ from rest_framework import status
 from django.db.models import ProtectedError
 from rest_framework.views import APIView
 from django.db.models import Sum, Count, Avg, F, Q
-from inventory.models import Product
-from datetime import datetime
+from django.db.models.functions import TruncMonth
+from inventory.models import Product, Author, Translator, RightsOwner, Reviewer, Project
+from datetime import datetime, timedelta
 from django.utils import timezone
 from decimal import Decimal
 
@@ -207,6 +208,357 @@ class InvoiceSummaryView(generics.RetrieveAPIView):
             'invoiceitem_set__product',
             'payment_set'
         ).order_by('-created_at', 'id')
+
+def _pct_change(current, previous) -> float | None:
+    current_val = float(current or 0)
+    previous_val = float(previous or 0)
+    if previous_val <= 0:
+        return 0.0 if current_val <= 0 else 100.0
+    return round(((current_val - previous_val) / previous_val) * 100, 1)
+
+
+def _last_n_months(n: int = 4):
+    today = timezone.now().date()
+    months: list[tuple[int, int]] = []
+    year, month = today.year, today.month
+    for offset in range(n - 1, -1, -1):
+        m = month - offset
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        months.append((y, m))
+    return months
+
+
+def _month_label(year: int, month: int) -> str:
+    return datetime(year, month, 1).strftime("%b")
+
+
+def _months_between(start_date, end_date, max_months: int = 12):
+    months: list[tuple[int, int]] = []
+    y, m = start_date.year, start_date.month
+    end_y, end_m = end_date.year, end_date.month
+    while (y, m) <= (end_y, end_m) and len(months) < max_months:
+        months.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
+
+
+def _parse_dashboard_filters(request):
+    start_date = request.query_params.get("start_date")
+    end_date = request.query_params.get("end_date")
+    warehouse_id = request.query_params.get("warehouse_id")
+
+    if (start_date and not end_date) or (end_date and not start_date):
+        return None, Response(
+            {"detail": "Both start_date and end_date are required when filtering by date."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    start_dt = end_dt = None
+    start_date_str = end_date_str = None
+    if start_date and end_date:
+        try:
+            start_date_obj = datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+            end_date_obj = datetime.strptime(end_date.strip(), "%Y-%m-%d").date()
+            if start_date_obj > end_date_obj:
+                return None, Response(
+                    {"detail": "start_date must be on or before end_date."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            start_dt = timezone.make_aware(datetime.combine(start_date_obj, datetime.min.time()))
+            end_dt = timezone.make_aware(datetime.combine(end_date_obj, datetime.max.time()))
+            start_date_str = start_date_obj.isoformat()
+            end_date_str = end_date_obj.isoformat()
+        except ValueError:
+            return None, Response(
+                {"detail": "start_date and end_date must be in YYYY-MM-DD format."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    wh_id = None
+    if warehouse_id:
+        try:
+            wh_id = int(warehouse_id)
+        except ValueError:
+            return None, Response(
+                {"detail": "warehouse_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    return {
+        "warehouse_id": wh_id,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "start_date": start_date_str,
+        "end_date": end_date_str,
+        "has_date_range": start_dt is not None and end_dt is not None,
+    }, None
+
+
+def _apply_sales_filters(item_qs, invoice_qs, filters):
+    if filters["warehouse_id"]:
+        item_qs = item_qs.filter(invoice__warehouse_id=filters["warehouse_id"])
+        invoice_qs = invoice_qs.filter(warehouse_id=filters["warehouse_id"])
+    if filters["has_date_range"]:
+        item_qs = item_qs.filter(
+            invoice__created_at__gte=filters["start_dt"],
+            invoice__created_at__lte=filters["end_dt"],
+        )
+        invoice_qs = invoice_qs.filter(
+            created_at__gte=filters["start_dt"],
+            created_at__lte=filters["end_dt"],
+        )
+    return item_qs, invoice_qs
+
+
+class DashboardOverviewView(APIView):
+    """
+    Aggregated metrics for the main dashboard (projects, people, sales, chart series).
+    GET /api/sales/dashboard/?warehouse_id=&start_date=&end_date=
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        filters, error_response = _parse_dashboard_filters(request)
+        if error_response:
+            return error_response
+
+        total_projects = Project.objects.count()
+        approved_projects = Project.objects.filter(approval_status=True).count()
+        pending_projects = total_projects - approved_projects
+        approved_percentage = (
+            round((approved_projects / total_projects) * 100, 1) if total_projects else 0.0
+        )
+        pending_percentage = (
+            round((pending_projects / total_projects) * 100, 1) if total_projects else 0.0
+        )
+
+        people = {
+            "authors": Author.objects.count(),
+            "translators": Translator.objects.count(),
+            "rights_owners": RightsOwner.objects.count(),
+            "reviewers": Reviewer.objects.count(),
+        }
+
+        base_item_qs = InvoiceItem.objects.filter(product__isnull=False)
+        base_invoice_qs = Invoice.objects.all()
+        item_qs, invoice_qs = _apply_sales_filters(base_item_qs, base_invoice_qs, filters)
+
+        total_bills = invoice_qs.count()
+        total_revenue = item_qs.aggregate(total=Sum("total_price"))["total"] or Decimal("0")
+        books_sold = item_qs.aggregate(total=Sum("quantity"))["total"] or 0
+
+        now = timezone.now()
+        if filters["has_date_range"]:
+            period_revenue = total_revenue
+            period_days = (filters["end_dt"].date() - filters["start_dt"].date()).days + 1
+            previous_end = filters["start_dt"] - timedelta(seconds=1)
+            previous_start = timezone.make_aware(
+                datetime.combine(
+                    (filters["start_dt"].date() - timedelta(days=period_days)),
+                    datetime.min.time(),
+                )
+            )
+
+            previous_period_items = base_item_qs
+            if filters["warehouse_id"]:
+                previous_period_items = previous_period_items.filter(
+                    invoice__warehouse_id=filters["warehouse_id"]
+                )
+            previous_period_items = previous_period_items.filter(
+                invoice__created_at__gte=previous_start,
+                invoice__created_at__lte=previous_end,
+            )
+
+            previous_invoice_qs = base_invoice_qs
+            if filters["warehouse_id"]:
+                previous_invoice_qs = previous_invoice_qs.filter(warehouse_id=filters["warehouse_id"])
+            previous_invoice_qs = previous_invoice_qs.filter(
+                created_at__gte=previous_start,
+                created_at__lte=previous_end,
+            )
+
+            current_month_bills = total_bills
+            previous_month_bills = previous_invoice_qs.count()
+            current_month_books = books_sold
+            previous_month_books = previous_period_items.aggregate(total=Sum("quantity"))["total"] or 0
+            previous_month_revenue = (
+                previous_period_items.aggregate(total=Sum("total_price"))["total"] or Decimal("0")
+            )
+            monthly_revenue = period_revenue
+
+            month_keys = _months_between(filters["start_dt"].date(), filters["end_dt"].date())
+            if not month_keys:
+                month_keys = _last_n_months(1)
+        else:
+            current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if current_month_start.month == 1:
+                previous_month_start = current_month_start.replace(
+                    year=current_month_start.year - 1, month=12
+                )
+            else:
+                previous_month_start = current_month_start.replace(
+                    month=current_month_start.month - 1
+                )
+
+            scoped_item_qs = base_item_qs
+            scoped_invoice_qs = base_invoice_qs
+            if filters["warehouse_id"]:
+                scoped_item_qs = scoped_item_qs.filter(invoice__warehouse_id=filters["warehouse_id"])
+                scoped_invoice_qs = scoped_invoice_qs.filter(warehouse_id=filters["warehouse_id"])
+
+            current_month_items = scoped_item_qs.filter(invoice__created_at__gte=current_month_start)
+            previous_month_items = scoped_item_qs.filter(
+                invoice__created_at__gte=previous_month_start,
+                invoice__created_at__lt=current_month_start,
+            )
+
+            monthly_revenue = (
+                current_month_items.aggregate(total=Sum("total_price"))["total"] or Decimal("0")
+            )
+            current_month_bills = scoped_invoice_qs.filter(
+                created_at__gte=current_month_start
+            ).count()
+            previous_month_bills = scoped_invoice_qs.filter(
+                created_at__gte=previous_month_start,
+                created_at__lt=current_month_start,
+            ).count()
+            current_month_books = (
+                current_month_items.aggregate(total=Sum("quantity"))["total"] or 0
+            )
+            previous_month_books = (
+                previous_month_items.aggregate(total=Sum("quantity"))["total"] or 0
+            )
+            previous_month_revenue = (
+                previous_month_items.aggregate(total=Sum("total_price"))["total"] or Decimal("0")
+            )
+
+            month_keys = _last_n_months(4)
+
+        month_starts = {
+            (y, m): timezone.make_aware(datetime(y, m, 1))
+            for y, m in month_keys
+        }
+
+        trend_item_qs = base_item_qs
+        if filters["warehouse_id"]:
+            trend_item_qs = trend_item_qs.filter(invoice__warehouse_id=filters["warehouse_id"])
+        if filters["has_date_range"]:
+            trend_item_qs = trend_item_qs.filter(
+                invoice__created_at__gte=filters["start_dt"],
+                invoice__created_at__lte=filters["end_dt"],
+            )
+
+        sales_by_month: dict[tuple[int, int], dict] = {
+            key: {"sales": 0, "revenue": Decimal("0")} for key in month_keys
+        }
+        sales_rows = (
+            trend_item_qs.filter(invoice__created_at__gte=month_starts[month_keys[0]])
+            .annotate(month=TruncMonth("invoice__created_at"))
+            .values("month")
+            .annotate(sales=Sum("quantity"), revenue=Sum("total_price"))
+        )
+        for row in sales_rows:
+            month_dt = row["month"]
+            if not month_dt:
+                continue
+            key = (month_dt.year, month_dt.month)
+            if key in sales_by_month:
+                sales_by_month[key] = {
+                    "sales": int(row["sales"] or 0),
+                    "revenue": row["revenue"] or Decimal("0"),
+                }
+
+        sales_trend = [
+            {
+                "month": _month_label(y, m),
+                "sales": sales_by_month[(y, m)]["sales"],
+                "revenue": float(sales_by_month[(y, m)]["revenue"]),
+            }
+            for y, m in month_keys
+        ]
+
+        project_qs = Project.objects.all()
+        if filters["has_date_range"]:
+            project_qs = project_qs.filter(
+                created_at__gte=filters["start_dt"],
+                created_at__lte=filters["end_dt"],
+            )
+
+        projects_by_month: dict[tuple[int, int], int] = {key: 0 for key in month_keys}
+        project_rows = (
+            project_qs.filter(created_at__gte=month_starts[month_keys[0]])
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(projects=Count("id"))
+        )
+        for row in project_rows:
+            month_dt = row["month"]
+            if not month_dt:
+                continue
+            key = (month_dt.year, month_dt.month)
+            if key in projects_by_month:
+                projects_by_month[key] = int(row["projects"] or 0)
+
+        project_trends = [
+            {"month": _month_label(y, m), "projects": projects_by_month[(y, m)]}
+            for y, m in month_keys
+        ]
+
+        genre_item_qs = trend_item_qs
+        sales_by_genre = [
+            {
+                "category": row["product__genre__display_name_en"] or "Unknown",
+                "sales": int(row["sales"] or 0),
+            }
+            for row in (
+                genre_item_qs.filter(product__genre__isnull=False)
+                .values("product__genre__display_name_en")
+                .annotate(sales=Sum("quantity"))
+                .order_by("-sales")[:10]
+            )
+        ]
+
+        return Response(
+            {
+                "filters": {
+                    "warehouse_id": filters["warehouse_id"],
+                    "start_date": filters["start_date"],
+                    "end_date": filters["end_date"],
+                },
+                "projects": {
+                    "total": total_projects,
+                    "approved": approved_projects,
+                    "pending": pending_projects,
+                    "approved_percentage": approved_percentage,
+                    "pending_percentage": pending_percentage,
+                },
+                "people": people,
+                "sales": {
+                    "total_bills": total_bills,
+                    "total_revenue": float(total_revenue),
+                    "monthly_revenue": float(monthly_revenue),
+                    "books_sold": int(books_sold),
+                    "bills_change_percent": _pct_change(current_month_bills, previous_month_bills),
+                    "revenue_change_percent": _pct_change(monthly_revenue, previous_month_revenue),
+                    "books_sold_change_percent": _pct_change(current_month_books, previous_month_books),
+                    "comparison_mode": "previous_period" if filters["has_date_range"] else "previous_month",
+                },
+                "project_status": [
+                    {"name": "Approved", "value": approved_projects, "color": "#10b981"},
+                    {"name": "Pending", "value": pending_projects, "color": "#f59e0b"},
+                ],
+                "project_trends": project_trends,
+                "sales_trend": sales_trend,
+                "sales_by_genre": sales_by_genre,
+            }
+        )
+
 
 class WarehouseDashboardView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1002,7 +1354,7 @@ class CalculateRoyaltiesView(APIView):
                 # For each PrintRun, count InvoiceItems created on or after its published_at date
                 # and before the next PrintRun's published_at (or current date if it's the latest)
                 from django.utils import timezone
-                from datetime import datetime
+                from datetime import datetime, timedelta
                 
                 sum_price_transactions = Decimal('0')
                 

@@ -1304,7 +1304,7 @@ class CalculateRoyaltiesView(APIView):
                     }
                 }, status=status.HTTP_200_OK)
             
-            # Step 3: Calculate Y = actual - X - free_copies
+            # Step 3: Calculate Y = actual - X - free_copies - (100% descount on the price copies)
             # Sum free_copies from ALL contracts for this project/product
             # A product can have multiple contracts, and we need to account for all free copies
             all_contracts = Contract.objects.filter(project=project)

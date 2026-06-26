@@ -785,9 +785,7 @@ class InventoryListCreateView(generics.ListCreateAPIView):
         if warehouse_id:
             queryset = queryset.filter(warehouse_id=warehouse_id)
         
-        # Note: Ordering is handled by OrderingFilter, so we don't need to call order_by here
-        # The default ordering is set via the 'ordering' attribute
-        return queryset
+        return queryset.order_by('id')
     def create(self, request, *args, **kwargs):
         # Handle frontend data format
         data = request.data.copy()
@@ -1689,8 +1687,7 @@ class ProductSummaryView(generics.ListAPIView):
         if language_id:
             queryset = queryset.filter(language_id=language_id)
 
-        # Note: Ordering is handled by OrderingFilter, so we don't need to call order_by here
-        return queryset
+        return queryset.order_by('id')
     def get_serializer_context(self):
 
         return { 'request': self.request }
@@ -1739,7 +1736,7 @@ class POSProductViewSet(viewsets.ModelViewSet):
             except (ValueError, TypeError):
                 pass  # Ignore invalid genre_id
             
-        return queryset
+        return queryset.order_by('id')
     
     def get_serializer_context(self):
         context = super().get_serializer_context()

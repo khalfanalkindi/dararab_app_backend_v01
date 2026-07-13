@@ -1,5 +1,5 @@
 from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated
+from users.api_permissions import IsAuthenticatedWithPagePermission as IsAuthenticated
 from rest_framework.response import Response
 from django.db.models import ProtectedError
 

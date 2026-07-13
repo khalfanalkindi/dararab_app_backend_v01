@@ -1,6 +1,6 @@
 from rest_framework import generics, viewsets, filters
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from users.api_permissions import IsAuthenticatedWithPagePermission as IsAuthenticated
 from django.db import transaction, models
 from django.db.models import ProtectedError, Sum, Count, OuterRef, Subquery, Q, Value, F, Case, When, Exists
 from django.db.models.functions import Coalesce
@@ -9,7 +9,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.http import Http404
 from rest_framework import serializers
-from inventory.pagination import StandardResultsSetPagination
+from inventory.pagination import StandardResultsSetPagination, DefinitionsResultsSetPagination
+from backend.exception_handler import error_response
 
 from .models import (
     PrintRun, Project, Product, Stakeholder, Warehouse, Inventory, Transfer,
@@ -731,9 +732,14 @@ class PrintRunBulkUpsertView(APIView):
 
 # ============================== Warehouse ==============================
 class WarehouseListCreateView(generics.ListCreateAPIView):
-    queryset = Warehouse.objects.all().order_by('name_en')
+    queryset = Warehouse.objects.all().order_by('name_en', 'id')
     serializer_class = WarehouseSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = DefinitionsResultsSetPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name_en', 'name_ar', 'location']
+    ordering_fields = ['id', 'name_en', 'name_ar', 'created_at']
+    ordering = ['name_en', 'id']
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -1129,13 +1135,90 @@ class InventoryDeleteByProductView(generics.DestroyAPIView):
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 # ============================== Transfer ==============================
+
+def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity, user):
+    """
+    Move stock between warehouses under row locks.
+    Raises serializers.ValidationError on insufficient quantity / same warehouse.
+    """
+    if from_warehouse.id == to_warehouse.id:
+        raise serializers.ValidationError(
+            {"warehouses": "From and to warehouses must be different"}
+        )
+    if quantity <= 0:
+        raise serializers.ValidationError({"quantity": "Quantity must be greater than 0"})
+
+    from_inventory, _ = Inventory.objects.select_for_update().get_or_create(
+        product=product,
+        warehouse=from_warehouse,
+        defaults={"quantity": 0},
+    )
+    if from_inventory.quantity < quantity:
+        raise serializers.ValidationError({
+            "quantity": (
+                f"Insufficient inventory. Available: {from_inventory.quantity}, "
+                f"Requested: {quantity}"
+            )
+        })
+
+    to_inventory, _ = Inventory.objects.select_for_update().get_or_create(
+        product=product,
+        warehouse=to_warehouse,
+        defaults={"quantity": 0},
+    )
+
+    from_inventory.quantity -= quantity
+    from_inventory.updated_by = user
+    from_inventory.save(update_fields=["quantity", "updated_by", "updated_at"])
+
+    to_inventory.quantity += quantity
+    to_inventory.updated_by = user
+    to_inventory.save(update_fields=["quantity", "updated_by", "updated_at"])
+
+    return from_inventory, to_inventory
+
+
+def _format_transfer_error_reason(detail) -> str:
+    """Flatten DRF ValidationError.detail into a single clerk-readable string."""
+    if detail is None:
+        return "Unknown error"
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, list):
+        return "; ".join(_format_transfer_error_reason(item) for item in detail)
+    if isinstance(detail, dict):
+        parts = []
+        for key, value in detail.items():
+            parts.append(f"{key}: {_format_transfer_error_reason(value)}")
+        return "; ".join(parts)
+    return str(detail)
+
+
 class TransferListCreateView(generics.ListCreateAPIView):
+    """
+    List/create a single transfer.
+
+    POST also adjusts inventory (same rules as bulk). Prefer
+    POST /api/inventory/transfers/bulk/ when moving many products.
+    """
     queryset = Transfer.objects.all().order_by('-created_at', 'id')
     serializer_class = TransferSerializer
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+        with transaction.atomic():
+            transfer = serializer.save(
+                created_by=self.request.user,
+                updated_by=self.request.user,
+            )
+            _apply_transfer_inventory(
+                product=transfer.product,
+                from_warehouse=transfer.from_warehouse,
+                to_warehouse=transfer.to_warehouse,
+                quantity=transfer.quantity,
+                user=self.request.user,
+            )
+
 
 class TransferUpdateView(generics.UpdateAPIView):
     queryset = Transfer.objects.all().order_by('id')
@@ -1145,156 +1228,181 @@ class TransferUpdateView(generics.UpdateAPIView):
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
 
+
 class TransferDeleteView(BaseDeleteView):
     queryset = Transfer.objects.all().order_by('id')
     serializer_class = TransferSerializer
 
+
 class TransferBulkCreateView(APIView):
+    """
+    Bulk create transfers and update inventory in one request.
+
+    Route: POST /api/inventory/transfers/bulk/
+
+    Body:
+      {
+        "transfers": [
+          {
+            "product_id": 1,
+            "from_warehouse_id": 1,
+            "to_warehouse_id": 2,
+            "quantity": 10,
+            "shipping_cost": 0,          # optional
+            "transfer_date": "2026-07-12" # optional ISO date/datetime
+          }
+        ]
+      }
+
+    Response (201 all ok / 207 partial / 400 all failed):
+      {
+        "succeeded": [{"id": <product_id>, "transfer_id": <id>, "quantity": N, "index": i}, ...],
+        "failed": [{"id": <product_id|null>, "reason": "...", "index": i}, ...],
+        "success_count": N,
+        "failed_count": M,
+        "total_requested": N+M,
+        "mode": "bulk"
+      }
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
-        """
-        Bulk create transfers and update inventory.
-        Expects: { "transfers": [{ "product_id": 1, "from_warehouse_id": 1, "to_warehouse_id": 2, "quantity": 10 }, ...] }
-        Returns: { "success_count": X, "failed_count": Y, "errors": [...] }
-        """
         if not isinstance(request.data, dict) or 'transfers' not in request.data:
-            return Response(
-                {"detail": "Expected a dictionary with 'transfers' key containing a list of transfer objects."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                code="INVALID_PAYLOAD",
+                detail="Expected a dictionary with 'transfers' key containing a list of transfer objects.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                succeeded=[],
+                failed=[],
             )
 
         transfers_data = request.data.get('transfers', [])
         if not isinstance(transfers_data, list) or len(transfers_data) == 0:
-            return Response(
-                {"detail": "Empty list provided. At least one transfer is required."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                code="EMPTY_LIST",
+                detail="Empty list provided. At least one transfer is required.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                succeeded=[],
+                failed=[],
             )
 
-        success_count = 0
-        failed_count = 0
-        errors = []
-        created_transfers = []
+        succeeded = []
+        failed = []
 
-        # Process all transfers in a single transaction
         try:
             with transaction.atomic():
                 for index, transfer_data in enumerate(transfers_data):
+                    product_id = transfer_data.get('product_id') if isinstance(transfer_data, dict) else None
+                    # Per-item savepoint so one failure does not roll back prior successes
                     try:
-                        # Validate required fields
-                        product_id = transfer_data.get('product_id')
-                        from_warehouse_id = transfer_data.get('from_warehouse_id')
-                        to_warehouse_id = transfer_data.get('to_warehouse_id')
-                        quantity = transfer_data.get('quantity', 0)
+                        with transaction.atomic():
+                            if not isinstance(transfer_data, dict):
+                                raise serializers.ValidationError(
+                                    {"detail": "Each transfer must be an object"}
+                                )
 
-                        if not product_id:
-                            raise serializers.ValidationError({"product_id": "Product ID is required"})
-                        if not from_warehouse_id:
-                            raise serializers.ValidationError({"from_warehouse_id": "From warehouse ID is required"})
-                        if not to_warehouse_id:
-                            raise serializers.ValidationError({"to_warehouse_id": "To warehouse ID is required"})
-                        if quantity <= 0:
-                            raise serializers.ValidationError({"quantity": "Quantity must be greater than 0"})
-                        if from_warehouse_id == to_warehouse_id:
-                            raise serializers.ValidationError({"warehouses": "From and to warehouses must be different"})
+                            from_warehouse_id = transfer_data.get('from_warehouse_id')
+                            to_warehouse_id = transfer_data.get('to_warehouse_id')
+                            quantity = transfer_data.get('quantity', 0)
 
-                        # Get product and warehouses
-                        try:
-                            product = Product.objects.get(id=product_id)
-                        except Product.DoesNotExist:
-                            raise serializers.ValidationError({"product_id": f"Product with id {product_id} not found"})
+                            if not product_id:
+                                raise serializers.ValidationError({"product_id": "Product ID is required"})
+                            if not from_warehouse_id:
+                                raise serializers.ValidationError(
+                                    {"from_warehouse_id": "From warehouse ID is required"}
+                                )
+                            if not to_warehouse_id:
+                                raise serializers.ValidationError(
+                                    {"to_warehouse_id": "To warehouse ID is required"}
+                                )
 
-                        try:
-                            from_warehouse = Warehouse.objects.get(id=from_warehouse_id)
-                        except Warehouse.DoesNotExist:
-                            raise serializers.ValidationError({"from_warehouse_id": f"Warehouse with id {from_warehouse_id} not found"})
+                            try:
+                                product = Product.objects.get(id=product_id)
+                            except Product.DoesNotExist:
+                                raise serializers.ValidationError(
+                                    {"product_id": f"Product with id {product_id} not found"}
+                                )
 
-                        try:
-                            to_warehouse = Warehouse.objects.get(id=to_warehouse_id)
-                        except Warehouse.DoesNotExist:
-                            raise serializers.ValidationError({"to_warehouse_id": f"Warehouse with id {to_warehouse_id} not found"})
+                            try:
+                                from_warehouse = Warehouse.objects.get(id=from_warehouse_id)
+                            except Warehouse.DoesNotExist:
+                                raise serializers.ValidationError(
+                                    {"from_warehouse_id": f"Warehouse with id {from_warehouse_id} not found"}
+                                )
 
-                        # Check if from_warehouse has enough inventory
-                        from_inventory, created = Inventory.objects.get_or_create(
-                            product=product,
-                            warehouse=from_warehouse,
-                            defaults={'quantity': 0}
-                        )
+                            try:
+                                to_warehouse = Warehouse.objects.get(id=to_warehouse_id)
+                            except Warehouse.DoesNotExist:
+                                raise serializers.ValidationError(
+                                    {"to_warehouse_id": f"Warehouse with id {to_warehouse_id} not found"}
+                                )
 
-                        if from_inventory.quantity < quantity:
-                            raise serializers.ValidationError({
-                                "quantity": f"Insufficient inventory. Available: {from_inventory.quantity}, Requested: {quantity}"
+                            _apply_transfer_inventory(
+                                product=product,
+                                from_warehouse=from_warehouse,
+                                to_warehouse=to_warehouse,
+                                quantity=quantity,
+                                user=request.user,
+                            )
+
+                            transfer = Transfer.objects.create(
+                                product=product,
+                                from_warehouse=from_warehouse,
+                                to_warehouse=to_warehouse,
+                                quantity=quantity,
+                                shipping_cost=transfer_data.get('shipping_cost', 0),
+                                transfer_date=transfer_data.get('transfer_date') or timezone.now(),
+                                created_by=request.user,
+                                updated_by=request.user,
+                            )
+
+                            succeeded.append({
+                                "id": product.id,
+                                "transfer_id": transfer.id,
+                                "quantity": quantity,
+                                "index": index,
                             })
 
-                        # Get or create to_warehouse inventory
-                        to_inventory, created = Inventory.objects.get_or_create(
-                            product=product,
-                            warehouse=to_warehouse,
-                            defaults={'quantity': 0}
-                        )
-
-                        # Create transfer record
-                        transfer = Transfer.objects.create(
-                            product=product,
-                            from_warehouse=from_warehouse,
-                            to_warehouse=to_warehouse,
-                            quantity=quantity,
-                            shipping_cost=transfer_data.get('shipping_cost', 0),
-                            transfer_date=transfer_data.get('transfer_date') or timezone.now(),
-                            created_by=request.user,
-                            updated_by=request.user
-                        )
-
-                        # Update inventory: subtract from from_warehouse, add to to_warehouse
-                        from_inventory.quantity -= quantity
-                        from_inventory.updated_by = request.user
-                        from_inventory.save()
-
-                        to_inventory.quantity += quantity
-                        to_inventory.updated_by = request.user
-                        to_inventory.save()
-
-                        created_transfers.append(transfer.id)
-                        success_count += 1
-
                     except serializers.ValidationError as e:
-                        failed_count += 1
-                        errors.append({
+                        failed.append({
+                            "id": product_id,
+                            "reason": _format_transfer_error_reason(
+                                e.detail if hasattr(e, "detail") else e
+                            ),
                             "index": index,
-                            "errors": e.detail
                         })
                     except Exception as e:
-                        failed_count += 1
-                        errors.append({
+                        failed.append({
+                            "id": product_id,
+                            "reason": str(e),
                             "index": index,
-                            "errors": {"detail": str(e)}
                         })
 
         except Exception as e:
-            return Response(
-                {"detail": f"Error processing bulk transfers: {str(e)}"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                code="BULK_TRANSFER_FAILED",
+                detail=f"Error processing bulk transfers: {str(e)}",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                succeeded=[],
+                failed=[{"id": None, "reason": str(e)}],
             )
 
-        # Prepare response
         response_data = {
-            "success_count": success_count,
-            "failed_count": failed_count,
+            "succeeded": succeeded,
+            "failed": failed,
+            "success_count": len(succeeded),
+            "failed_count": len(failed),
             "total_requested": len(transfers_data),
-            "created_transfer_ids": created_transfers,
-            "errors": errors
+            "created_transfer_ids": [row["transfer_id"] for row in succeeded],
+            "mode": "bulk",
         }
 
-        # Return appropriate status code
-        if failed_count == 0:
-            # All succeeded
+        if len(failed) == 0:
             return Response(response_data, status=status.HTTP_201_CREATED)
-        elif success_count == 0:
-            # All failed
+        if len(succeeded) == 0:
             return Response(response_data, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            # Partial success
-            return Response(response_data, status=status.HTTP_207_MULTI_STATUS)
+        return Response(response_data, status=status.HTTP_207_MULTI_STATUS)
+
 
 class TransferPreviewView(APIView):
     """
@@ -1396,9 +1504,14 @@ class TransferPreviewView(APIView):
 
 # ============================== People ==============================
 class AuthorListCreateView(generics.ListCreateAPIView):
-    queryset = Author.objects.all().order_by('name')
+    queryset = Author.objects.all().order_by('name', 'id')
     serializer_class = AuthorSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = DefinitionsResultsSetPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'bio']
+    ordering_fields = ['id', 'name', 'created_at']
+    ordering = ['name', 'id']
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -1416,9 +1529,14 @@ class AuthorDeleteView(BaseDeleteView):
     serializer_class = AuthorSerializer
 
 class TranslatorListCreateView(generics.ListCreateAPIView):
-    queryset = Translator.objects.all().order_by('name')
+    queryset = Translator.objects.all().order_by('name', 'id')
     serializer_class = TranslatorSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = DefinitionsResultsSetPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'bio']
+    ordering_fields = ['id', 'name', 'created_at']
+    ordering = ['name', 'id']
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -1436,9 +1554,14 @@ class TranslatorDeleteView(BaseDeleteView):
     serializer_class = TranslatorSerializer
 
 class RightsOwnerListCreateView(generics.ListCreateAPIView):
-    queryset = RightsOwner.objects.all().order_by('name')
+    queryset = RightsOwner.objects.all().order_by('name', 'id')
     serializer_class = RightsOwnerSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = DefinitionsResultsSetPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name']
+    ordering_fields = ['id', 'name', 'created_at']
+    ordering = ['name', 'id']
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)

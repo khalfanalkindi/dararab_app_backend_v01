@@ -1,14 +1,18 @@
 from rest_framework import generics, viewsets
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters as drf_filters
-from rest_framework.permissions import IsAuthenticated
+from users.api_permissions import IsAuthenticatedWithPagePermission as IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import ProtectedError
 from rest_framework.views import APIView
-from django.db.models import Sum, Count, Avg, F, Q
+from rest_framework.exceptions import NotFound
+from django.http import Http404
+from django.db import transaction
+from django.db.models import ProtectedError, Sum, Count, Avg, F, Q
 from django.db.models.functions import TruncMonth
-from inventory.models import Product, Author, Translator, RightsOwner, Reviewer, Project
+from inventory.models import Product, Author, Translator, RightsOwner, Reviewer, Project, Inventory
+from inventory.pagination import DefinitionsResultsSetPagination
+from backend.exception_handler import error_response
 from datetime import datetime, timedelta
 from django.utils import timezone
 from decimal import Decimal
@@ -35,9 +39,14 @@ class BaseDeleteView(generics.DestroyAPIView):
 
 # ======== Customers ========
 class CustomerListCreateView(generics.ListCreateAPIView):
-    queryset = Customer.objects.all().order_by('id')
+    queryset = Customer.objects.all().order_by('institution_name', 'id')
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = DefinitionsResultsSetPagination
+    filter_backends = [drf_filters.SearchFilter, drf_filters.OrderingFilter]
+    search_fields = ['institution_name', 'contact_person', 'email', 'phone']
+    ordering_fields = ['id', 'institution_name', 'created_at']
+    ordering = ['institution_name', 'id']
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -62,9 +71,11 @@ class InvoiceListCreateView(generics.ListCreateAPIView):
     queryset = Invoice.objects.all().order_by('-created_at', 'id')
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, drf_filters.SearchFilter]
+    filter_backends = [DjangoFilterBackend, drf_filters.SearchFilter, drf_filters.OrderingFilter]
     filterset_class = InvoiceFilter
-    search_fields = ['id', 'customer__institution_name', 'customer__contact_person']
+    search_fields = ['id', 'composite_id', 'customer__institution_name', 'customer__contact_person']
+    ordering_fields = ['id', 'created_at', 'updated_at']
+    ordering = ['-created_at', 'id']
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -123,8 +134,141 @@ class InvoiceUpdateView(generics.UpdateAPIView):
         serializer.save(updated_by=self.request.user)
 
 class InvoiceDeleteView(BaseDeleteView):
+    """
+    DELETE /api/sales/invoices/<id>/delete/
+
+    Restores invoice line quantities to warehouse inventory, then deletes the invoice
+    (payments/items cascade). Errors are structured for the UI:
+
+      {
+        "code": "INVENTORY_CONFLICT" | "MISSING_WAREHOUSE" | "RELATED_DATA" | "NOT_FOUND" | "DELETE_FAILED",
+        "detail": "Human-readable summary",
+        "field_errors": {},
+        "product_ids": [1, 2],   # when relevant
+        "errors": [...]          # optional technical rows
+      }
+    """
     queryset = Invoice.objects.all().order_by('id')
     serializer_class = InvoiceSerializer
+
+    def delete(self, request, *args, **kwargs):
+        try:
+            invoice = self.get_object()
+        except (Http404, NotFound):
+            return error_response(
+                code="NOT_FOUND",
+                detail="Invoice was not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+                product_ids=[],
+                errors=[],
+            )
+
+        items = list(
+            InvoiceItem.objects.filter(invoice=invoice)
+            .select_related("product")
+            .only("id", "quantity", "product_id", "product__id")
+        )
+
+        # Aggregate qty by product (skip lines with no product)
+        qty_by_product: dict[int, int] = {}
+        for item in items:
+            if not item.product_id:
+                continue
+            qty_by_product[item.product_id] = qty_by_product.get(item.product_id, 0) + int(item.quantity or 0)
+
+        needs_inventory = any(q > 0 for q in qty_by_product.values())
+        if needs_inventory and not invoice.warehouse_id:
+            return error_response(
+                code="MISSING_WAREHOUSE",
+                detail="This invoice has line items but no warehouse, so stock cannot be restored.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                product_ids=list(qty_by_product.keys()),
+                errors=[],
+            )
+
+        try:
+            conflict_payload = None
+            with transaction.atomic():
+                conflict_product_ids: list[int] = []
+                technical_errors: list[dict] = []
+
+                if needs_inventory and invoice.warehouse_id:
+                    warehouse_id = invoice.warehouse_id
+                    for product_id, quantity in qty_by_product.items():
+                        if quantity <= 0:
+                            continue
+                        try:
+                            inv, _created = Inventory.objects.select_for_update().get_or_create(
+                                product_id=product_id,
+                                warehouse_id=warehouse_id,
+                                defaults={
+                                    "quantity": 0,
+                                    "created_by": request.user,
+                                    "updated_by": request.user,
+                                },
+                            )
+                            inv.quantity = int(inv.quantity or 0) + quantity
+                            inv.updated_by = request.user
+                            inv.save(update_fields=["quantity", "updated_by", "updated_at"])
+                        except Exception as exc:
+                            conflict_product_ids.append(product_id)
+                            technical_errors.append(
+                                {
+                                    "product_id": product_id,
+                                    "detail": str(exc),
+                                }
+                            )
+
+                    if conflict_product_ids:
+                        # Abort transaction — nothing deleted / nothing half-restored
+                        transaction.set_rollback(True)
+                        conflict_payload = {
+                            "code": "INVENTORY_CONFLICT",
+                            "detail": "Could not restore inventory for some products before deleting the invoice.",
+                            "field_errors": {},
+                            "product_ids": conflict_product_ids,
+                            "errors": technical_errors,
+                        }
+                    else:
+                        invoice.delete()
+                else:
+                    invoice.delete()
+
+            if conflict_payload:
+                return Response(conflict_payload, status=status.HTTP_409_CONFLICT)
+
+            return Response(
+                {
+                    "code": "OK",
+                    "detail": "Invoice deleted and items returned to warehouse.",
+                    "field_errors": {},
+                    "product_ids": list(qty_by_product.keys()),
+                    "errors": [],
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except ProtectedError as exc:
+            protected = []
+            try:
+                protected = [str(o) for o in getattr(exc, "protected_objects", [])][:20]
+            except Exception:
+                protected = []
+            return error_response(
+                code="RELATED_DATA",
+                detail="Cannot delete this invoice because related records still exist.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                product_ids=[],
+                errors=protected,
+            )
+        except Exception as exc:
+            return error_response(
+                code="DELETE_FAILED",
+                detail="Invoice could not be deleted.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                product_ids=[],
+                errors=[str(exc)],
+            )
 
 # ======== Invoice Items ========
 class InvoiceItemListCreateView(generics.ListCreateAPIView):
@@ -743,9 +887,11 @@ class OutstandingPaymentInvoiceListView(generics.ListAPIView):
     """Get invoices with outstanding payments (unpaid or partially paid)"""
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, drf_filters.SearchFilter]
+    filter_backends = [DjangoFilterBackend, drf_filters.SearchFilter, drf_filters.OrderingFilter]
     filterset_class = InvoiceFilter
     search_fields = ['composite_id', 'customer__institution_name', 'customer__contact_person']
+    ordering_fields = ['id', 'created_at', 'updated_at']
+    ordering = ['-created_at', 'id']
     
     def get_queryset(self):
         # Get all invoices and filter in Python to use the model properties

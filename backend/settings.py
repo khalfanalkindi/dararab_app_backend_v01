@@ -271,6 +271,9 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'users.api_permissions.IsAuthenticatedWithPagePermission',
+    ),
    'DEFAULT_PAGINATION_CLASS': 'inventory.pagination.StandardResultsSetPagination',
     'PAGE_SIZE': 25,
     'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
@@ -278,6 +281,8 @@ REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
     ],
+    # Standardize errors: { detail, code, field_errors } (+ optional domain extras)
+    'EXCEPTION_HANDLER': 'backend.exception_handler.custom_exception_handler',
 }
 
 CORS_ALLOW_ALL_ORIGINS = False  # ❌ Don't allow all, for security

@@ -12,3 +12,9 @@ __pycache__/
 backend/settings.py
 .venv/
 .venv3/
+
+# Local maintenance / planning / one-off scripts (do not push)
+/docs/
+/scripts/
+*.md
+!README.md

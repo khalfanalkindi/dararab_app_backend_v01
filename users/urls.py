@@ -1,12 +1,37 @@
 from django.urls import path
-from .views import LoginView, LogoutView, PageDeleteView, PageUpdateView, RoleDeleteView, RolePermissionDeleteView, RolePermissionUpdateView, RoleUpdateView, UserDeleteView, UserListCreateView, UserPermissionDeleteView, UserPermissionUpdateView, UserRetrieveUpdateDestroyView, RoleListCreateView, PageListCreateView, RolePermissionListCreateView, UserPermissionListCreateView
-from rest_framework_simplejwt.views import TokenRefreshView
+from .views import (
+    LoginView,
+    LogoutView,
+    MyPermissionsView,
+    MeView,
+    ChangePasswordView,
+    PageDeleteView,
+    PageUpdateView,
+    RoleDeleteView,
+    RolePermissionDeleteView,
+    RolePermissionUpdateView,
+    RoleUpdateView,
+    UserDeleteView,
+    UserListCreateView,
+    UserPermissionDeleteView,
+    UserPermissionUpdateView,
+    UserRetrieveUpdateDestroyView,
+    RoleListCreateView,
+    PageListCreateView,
+    RolePermissionListCreateView,
+    UserPermissionListCreateView,
+    TokenRefreshView,
+)
 
 urlpatterns = [
     # ✅ Authentication
     path('auth/login/', LoginView.as_view(), name='login'),
     path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("auth/refresh/", TokenRefreshView.as_view(), name="token_refresh_alias"),
     path("auth/logout/", LogoutView.as_view(), name="logout"),
+    path("auth/my-permissions/", MyPermissionsView.as_view(), name="my-permissions"),
+    path("auth/me/", MeView.as_view(), name="auth-me"),
+    path("auth/change-password/", ChangePasswordView.as_view(), name="auth-change-password"),
 
     # ✅ User Management
     path('users/', UserListCreateView.as_view(), name='user-list-create'),

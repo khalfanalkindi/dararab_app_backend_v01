@@ -1228,7 +1228,7 @@ class CalculateRoyaltiesView(APIView):
     2. Compare X with actual (paid books) from ProductSalesStats
     3. If X > actual: return eligible=False
     4. If X <= actual:
-       - Y = actual - X - free_copies
+       - Y = actual - X - free_copies - fully_discounted_copies (100% discount, payment 0)
        - Check royalties_type:
          - list_price (id=52): RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
          - retail_price (id=53): 
@@ -1450,7 +1450,7 @@ class CalculateRoyaltiesView(APIView):
                     }
                 }, status=status.HTTP_200_OK)
             
-            # Step 3: Calculate Y = actual - X - free_copies - (100% descount on the price copies)
+            # Step 3: Calculate Y = actual - X - free_copies - (100% discount copies with payment 0)
             # Sum free_copies from ALL contracts for this project/product
             # A product can have multiple contracts, and we need to account for all free copies
             all_contracts = Contract.objects.filter(project=project)
@@ -1458,7 +1458,14 @@ class CalculateRoyaltiesView(APIView):
                 (c.free_copies or 0 for c in all_contracts),
                 0
             )
-            Y = actual_paid - X - free_copies
+            # Exclude books sold at 100% discount with zero payment (included in actual when total_price=0)
+            fully_discounted_copies = InvoiceItem.objects.filter(
+                product=product,
+                paid_amount=0,
+            ).filter(
+                Q(discount_percent__gte=100) | Q(total_price=0)
+            ).aggregate(total=Sum('quantity'))['total'] or 0
+            Y = actual_paid - X - free_copies - fully_discounted_copies
             # Convert Y to int if it's a whole number (it represents count of books)
             Y_float = float(Y)
             Y_int = int(Y_float) if Y_float.is_integer() else Y_float
@@ -1468,11 +1475,12 @@ class CalculateRoyaltiesView(APIView):
                 return Response({
                     "eligible": False,
                     "RA": None,
-                    "reason": f"Y ({Y_int}) is less than or equal to 0 after subtracting X and free copies",
+                    "reason": f"Y ({Y_int}) is less than or equal to 0 after subtracting X, free copies, and 100% discount copies",
                     "details": {
                         "X": X_int,
                         "actual_paid": actual_paid,
                         "free_copies": free_copies,
+                        "fully_discounted_copies": fully_discounted_copies,
                         "Y": Y_int
                     }
                 }, status=status.HTTP_200_OK)
@@ -1547,6 +1555,7 @@ class CalculateRoyaltiesView(APIView):
                     "Y": Y_int,
                     "actual_paid": actual_paid,
                     "free_copies": free_copies,
+                    "fully_discounted_copies": fully_discounted_copies,
                     "royalties_type_id": royalties_type_id,
                     "royalties_type": contract.royalties_type.value if contract.royalties_type else None,
                     "commission_percent": float(contract.commission_percent),

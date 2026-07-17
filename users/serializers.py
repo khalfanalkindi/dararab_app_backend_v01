@@ -49,6 +49,89 @@ class UserBasicSerializer(serializers.ModelSerializer):
         return f"{obj.first_name} {obj.last_name}".strip()
 
 
+class MeSerializer(serializers.ModelSerializer):
+    """Current-user profile: readable role label; role/is_active not writable here."""
+
+    role_name = serializers.SerializerMethodField(read_only=True)
+    role = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = User
+        fields = [
+            'id',
+            'username',
+            'email',
+            'phone_number',
+            'first_name',
+            'last_name',
+            'role',
+            'role_name',
+            'is_active',
+        ]
+        read_only_fields = ['id', 'role', 'role_name', 'is_active']
+
+    def get_role_name(self, obj):
+        if obj.role_id and obj.role:
+            return obj.role.name
+        if obj.is_superuser:
+            return "Admin"
+        return ""
+
+    def validate_username(self, value):
+        user = self.instance
+        qs = User.objects.filter(username=value)
+        if user:
+            qs = qs.exclude(pk=user.pk)
+        if qs.exists():
+            raise serializers.ValidationError("This username is already taken.")
+        return value
+
+    def validate_email(self, value):
+        if not value:
+            return value
+        user = self.instance
+        qs = User.objects.filter(email=value)
+        if user:
+            qs = qs.exclude(pk=user.pk)
+        if qs.exists():
+            raise serializers.ValidationError("This email is already in use.")
+        return value
+
+    def validate_phone_number(self, value):
+        if value in (None, ""):
+            return None
+        user = self.instance
+        qs = User.objects.filter(phone_number=value)
+        if user:
+            qs = qs.exclude(pk=user.pk)
+        if qs.exists():
+            raise serializers.ValidationError("This phone number is already in use.")
+        return value
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return attrs
+
+    def validate_current_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect.")
+        return value
+
+    def save(self, **kwargs):
+        user = self.context["request"].user
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        return user
+
+
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role

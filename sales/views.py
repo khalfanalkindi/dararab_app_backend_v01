@@ -1212,6 +1212,88 @@ class ProductSalesStatsRecalculateAllView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+
+class BookAnalyticsView(APIView):
+    """
+    Title-level book sales analytics (Phase 1).
+
+    GET /api/sales/products/<product_id>/analytics/
+      ?start_date=&end_date=&warehouse_id=&customer_id=&customer_type_id=
+      &invoice_type_id=&payment_status=&invoice_search=
+      &discount_min=&discount_max=&page=&page_size=
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, product_id: int):
+        from sales.services import BookAnalyticsError, BookAnalyticsService
+
+        try:
+            filters = self._parse_filters(request)
+            payload = BookAnalyticsService(product_id, filters).build()
+            return Response(payload, status=status.HTTP_200_OK)
+        except BookAnalyticsError as exc:
+            message = str(exc)
+            code = (
+                status.HTTP_404_NOT_FOUND
+                if message == "Product not found"
+                else status.HTTP_400_BAD_REQUEST
+            )
+            return Response({"detail": message}, status=code)
+
+    def _parse_filters(self, request):
+        from sales.services import BookAnalyticsError
+        from sales.services.book_analytics import BookAnalyticsFilters
+
+        qp = request.query_params
+
+        def opt_int(name: str):
+            raw = qp.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError) as exc:
+                raise BookAnalyticsError(f"{name} must be an integer") from exc
+
+        def opt_decimal(name: str):
+            raw = qp.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return Decimal(str(raw))
+            except Exception as exc:
+                raise BookAnalyticsError(f"{name} must be a number") from exc
+
+        def opt_date(name: str):
+            raw = qp.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return datetime.strptime(raw.strip(), "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise BookAnalyticsError(f"{name} must be in YYYY-MM-DD format") from exc
+
+        page = opt_int("page") or 1
+        page_size = opt_int("page_size") or 50
+        payment_status = (qp.get("payment_status") or "").strip().lower() or None
+
+        return BookAnalyticsFilters(
+            start_date=opt_date("start_date"),
+            end_date=opt_date("end_date"),
+            warehouse_id=opt_int("warehouse_id"),
+            customer_id=opt_int("customer_id"),
+            customer_type_id=opt_int("customer_type_id"),
+            invoice_type_id=opt_int("invoice_type_id"),
+            payment_status=payment_status,
+            invoice_search=(qp.get("invoice_search") or "").strip() or None,
+            discount_min=opt_decimal("discount_min"),
+            discount_max=opt_decimal("discount_max"),
+            page=page,
+            page_size=page_size,
+        )
+
+
 class CalculateRoyaltiesView(APIView):
     """
     Calculate royalties for a contract/project and product.

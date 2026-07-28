@@ -55,6 +55,13 @@ urlpatterns = [
     path("product-sales-stats/<int:product_id>/", views.ProductSalesStatsDetailView.as_view(), name="product-sales-stats-detail"),
     path("product-sales-stats/<int:product_id>/recalculate/", views.ProductSalesStatsRecalculateView.as_view(), name="product-sales-stats-recalculate"),
     path("product-sales-stats/recalculate-all/", views.ProductSalesStatsRecalculateAllView.as_view(), name="product-sales-stats-recalculate-all"),
+
+    # Book Sales Analytics (title-level)
+    path(
+        "products/<int:product_id>/analytics/",
+        views.BookAnalyticsView.as_view(),
+        name="book-analytics",
+    ),
     
     # Royalties Calculation
     path("calculate-royalties/", views.CalculateRoyaltiesView.as_view(), name="calculate-royalties"),

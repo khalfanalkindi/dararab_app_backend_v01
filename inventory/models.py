@@ -225,6 +225,56 @@ class Transfer(AuditModel):
         to_warehouse = str(self.to_warehouse) if self.to_warehouse else "No Warehouse"
         return f"Transfer {self.quantity} of {product_name} from {from_warehouse} to {to_warehouse}"
 
+
+# 📒 Stock movement ledger (Phase 2 — Book Sales Analytics)
+class StockMovement(AuditModel):
+    """
+    Append-only stock ledger. Every inventory quantity change should write a row.
+    quantity_delta is signed: negative leaves the warehouse, positive enters it.
+    """
+
+    class MovementType(models.TextChoices):
+        SALE = "sale", "Sale"
+        RETURN = "return", "Return"
+        TRANSFER_OUT = "transfer_out", "Transfer Out"
+        TRANSFER_IN = "transfer_in", "Transfer In"
+        ADJUSTMENT = "adjustment", "Adjustment"
+        DAMAGE = "damage", "Damage"
+        LOSS = "loss", "Loss"
+        COMPLIMENTARY = "complimentary", "Complimentary"
+        RESTOCK = "restock", "Restock"
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="stock_movements", db_index=True)
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name="stock_movements", db_index=True)
+    movement_type = models.CharField(max_length=32, choices=MovementType.choices, db_index=True)
+    quantity_delta = models.IntegerField(help_text="Signed change applied to inventory (+ in / − out)")
+    quantity_before = models.IntegerField()
+    quantity_after = models.IntegerField()
+    occurred_at = models.DateTimeField(db_index=True)
+    notes = models.TextField(blank=True, default="")
+    reference_code = models.CharField(max_length=100, blank=True, default="")
+
+    # Optional links back to source documents (SET_NULL so ledger survives deletes)
+    invoice_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    invoice_item_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    transfer_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    return_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ["-occurred_at", "-id"]
+        indexes = [
+            models.Index(fields=["product", "warehouse", "occurred_at"]),
+            models.Index(fields=["product", "occurred_at"]),
+            models.Index(fields=["movement_type", "occurred_at"]),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.movement_type} {self.quantity_delta:+d} "
+            f"product={self.product_id} wh={self.warehouse_id}"
+        )
+
+
 # Contract
 
 class Contract(AuditModel):

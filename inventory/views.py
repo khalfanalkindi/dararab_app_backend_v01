@@ -1003,70 +1003,71 @@ class InventoryBulkUpsertView(APIView):
 
         # Process all items in a single transaction
         try:
+            from inventory.models import StockMovement
+            from inventory.services.stock_ledger import set_absolute_quantity, ALLOWED_MOVEMENT_TYPES
+
             with transaction.atomic():
                 for index, item_data in enumerate(validated_data):
                     pk = item_data.get("id")
-                    
+                    movement_type = (
+                        item_data.get("movement_type")
+                        or StockMovement.MovementType.ADJUSTMENT
+                    )
+                    if movement_type not in ALLOWED_MOVEMENT_TYPES:
+                        raise serializers.ValidationError(
+                            {f"index_{index}": f"Invalid movement_type: {movement_type}"}
+                        )
+                    invoice_id = item_data.get("invoice_id")
+                    invoice_item_id = item_data.get("invoice_item_id")
+                    notes = item_data.get("notes") or ""
+                    reference_code = item_data.get("reference_code") or ""
+
                     if pk:
-                        # Update existing inventory
                         try:
-                            instance = Inventory.objects.get(pk=pk)
-                            serializer = InventorySerializer(
-                                instance,
-                                data=item_data,
-                                partial=True,
-                                context={"request": request},
-                            )
-                            serializer.is_valid(raise_exception=True)
-                            serializer.save(updated_by=request.user)
-                            results.append(serializer.data)
+                            instance = Inventory.objects.select_for_update().get(pk=pk)
                         except Inventory.DoesNotExist:
                             raise serializers.ValidationError(
                                 {f"index_{index}": f"Inventory with id {pk} not found."}
                             )
+                        product_id = instance.product_id
+                        warehouse_id = instance.warehouse_id
+                        new_quantity = int(item_data.get("quantity", 0))
+                        set_absolute_quantity(
+                            product_id=product_id,
+                            warehouse_id=warehouse_id,
+                            new_quantity=new_quantity,
+                            movement_type=movement_type,
+                            user=request.user,
+                            notes=notes,
+                            reference_code=reference_code,
+                            invoice_id=invoice_id,
+                            invoice_item_id=invoice_item_id,
+                        )
+                        instance.refresh_from_db()
+                        serializer = InventorySerializer(instance, context={"request": request})
+                        results.append(serializer.data)
                     else:
-                        # Create new inventory or update existing (handles unique_together constraint)
                         product_id = item_data.get("product_id")
                         warehouse_id = item_data.get("warehouse_id")
-                        quantity = item_data.get("quantity", 0)
-                        
-                        # Check if inventory already exists for this product+warehouse combination
-                        # Due to unique_together constraint, only one inventory per product+warehouse
-                        existing = Inventory.objects.filter(
+                        new_quantity = int(item_data.get("quantity", 0))
+                        set_absolute_quantity(
                             product_id=product_id,
-                            warehouse_id=warehouse_id
-                        ).first()
-                        
-                        if existing:
-                            # Update existing inventory - replace quantity with new value
-                            # This ensures one inventory record per product+warehouse combination
-                            old_quantity = existing.quantity
-                            serializer = InventorySerializer(
-                                existing,
-                                data=item_data,
-                                partial=True,
-                                context={"request": request},
-                            )
-                            serializer.is_valid(raise_exception=True)
-                            serializer.save(updated_by=request.user)
-                            result_data = serializer.data
-                            result_data['_action'] = 'updated'
-                            result_data['_old_quantity'] = old_quantity
-                            results.append(result_data)
-                        else:
-                            # Create new inventory
-                            serializer = InventorySerializer(
-                                data=item_data,
-                                context={"request": request},
-                            )
-                            serializer.is_valid(raise_exception=True)
-                            serializer.save(
-                                created_by=request.user,
-                                updated_by=request.user,
-                            )
-                            result_data = serializer.data
-                            result_data['_action'] = 'created'
-                            results.append(result_data)
+                            warehouse_id=warehouse_id,
+                            new_quantity=new_quantity,
+                            movement_type=movement_type,
+                            user=request.user,
+                            notes=notes,
+                            reference_code=reference_code,
+                            invoice_id=invoice_id,
+                            invoice_item_id=invoice_item_id,
+                        )
+                        inv = Inventory.objects.get(
+                            product_id=product_id, warehouse_id=warehouse_id
+                        )
+                        serializer = InventorySerializer(inv, context={"request": request})
+                        result_data = serializer.data
+                        result_data["_action"] = "upserted"
+                        results.append(result_data)
 
             return Response(
                 {
@@ -1136,11 +1137,14 @@ class InventoryDeleteByProductView(generics.DestroyAPIView):
 
 # ============================== Transfer ==============================
 
-def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity, user):
+def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity, user, transfer_id=None, occurred_at=None):
     """
-    Move stock between warehouses under row locks.
+    Move stock between warehouses under row locks and append ledger rows.
     Raises serializers.ValidationError on insufficient quantity / same warehouse.
     """
+    from inventory.models import StockMovement
+    from inventory.services.stock_ledger import apply_delta
+
     if from_warehouse.id == to_warehouse.id:
         raise serializers.ValidationError(
             {"warehouses": "From and to warehouses must be different"}
@@ -1148,34 +1152,26 @@ def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity
     if quantity <= 0:
         raise serializers.ValidationError({"quantity": "Quantity must be greater than 0"})
 
-    from_inventory, _ = Inventory.objects.select_for_update().get_or_create(
-        product=product,
-        warehouse=from_warehouse,
-        defaults={"quantity": 0},
+    apply_delta(
+        product_id=product.id,
+        warehouse_id=from_warehouse.id,
+        delta=-int(quantity),
+        movement_type=StockMovement.MovementType.TRANSFER_OUT,
+        user=user,
+        occurred_at=occurred_at,
+        transfer_id=transfer_id,
+        notes=f"Transfer out to warehouse {to_warehouse.id}",
     )
-    if from_inventory.quantity < quantity:
-        raise serializers.ValidationError({
-            "quantity": (
-                f"Insufficient inventory. Available: {from_inventory.quantity}, "
-                f"Requested: {quantity}"
-            )
-        })
-
-    to_inventory, _ = Inventory.objects.select_for_update().get_or_create(
-        product=product,
-        warehouse=to_warehouse,
-        defaults={"quantity": 0},
+    apply_delta(
+        product_id=product.id,
+        warehouse_id=to_warehouse.id,
+        delta=int(quantity),
+        movement_type=StockMovement.MovementType.TRANSFER_IN,
+        user=user,
+        occurred_at=occurred_at,
+        transfer_id=transfer_id,
+        notes=f"Transfer in from warehouse {from_warehouse.id}",
     )
-
-    from_inventory.quantity -= quantity
-    from_inventory.updated_by = user
-    from_inventory.save(update_fields=["quantity", "updated_by", "updated_at"])
-
-    to_inventory.quantity += quantity
-    to_inventory.updated_by = user
-    to_inventory.save(update_fields=["quantity", "updated_by", "updated_at"])
-
-    return from_inventory, to_inventory
 
 
 def _format_transfer_error_reason(detail) -> str:
@@ -1217,6 +1213,8 @@ class TransferListCreateView(generics.ListCreateAPIView):
                 to_warehouse=transfer.to_warehouse,
                 quantity=transfer.quantity,
                 user=self.request.user,
+                transfer_id=transfer.id,
+                occurred_at=transfer.transfer_date,
             )
 
 
@@ -1337,14 +1335,6 @@ class TransferBulkCreateView(APIView):
                                     {"to_warehouse_id": f"Warehouse with id {to_warehouse_id} not found"}
                                 )
 
-                            _apply_transfer_inventory(
-                                product=product,
-                                from_warehouse=from_warehouse,
-                                to_warehouse=to_warehouse,
-                                quantity=quantity,
-                                user=request.user,
-                            )
-
                             transfer = Transfer.objects.create(
                                 product=product,
                                 from_warehouse=from_warehouse,
@@ -1354,6 +1344,16 @@ class TransferBulkCreateView(APIView):
                                 transfer_date=transfer_data.get('transfer_date') or timezone.now(),
                                 created_by=request.user,
                                 updated_by=request.user,
+                            )
+
+                            _apply_transfer_inventory(
+                                product=product,
+                                from_warehouse=from_warehouse,
+                                to_warehouse=to_warehouse,
+                                quantity=quantity,
+                                user=request.user,
+                                transfer_id=transfer.id,
+                                occurred_at=transfer.transfer_date,
                             )
 
                             succeeded.append({

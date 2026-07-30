@@ -165,6 +165,9 @@ class BookAnalyticsService:
         )
         transfer_rows = self._transfer_rows(transfers)
         return_rows = self._return_transaction_rows(items, returns_by_item)
+        by_warehouse = self._merge_warehouse_stock(by_warehouse, stock_rows)
+        by_warehouse = self._enrich_warehouse_ledger(by_warehouse)
+        stock_summary = self._stock_summary(stock_rows)
 
         transactions = sorted(
             sale_rows + transfer_rows + return_rows,
@@ -201,13 +204,15 @@ class BookAnalyticsService:
                 "revenue": "line total_price after discounts; tax excluded",
                 "transfers": "never counted as sales",
                 "complimentary": "discount_percent >= 100 or total_price == 0",
-                "returns": "reduce net units and net revenue pro-rata",
+                "returns": "reduce net units and net revenue pro-rata; Phase 2 restocks warehouse",
                 "child_invoices": "excluded (main_invoice set) to avoid double-counting",
                 "channel": "invoice_type",
                 "currency": "USD ($); OMR is POS display-only",
+                "stock_ledger": "opening/closing from StockMovement when date range set",
             },
             "summary": summary,
-            "by_warehouse": self._merge_warehouse_stock(by_warehouse, stock_rows),
+            "stock": stock_summary,
+            "by_warehouse": by_warehouse,
             "by_channel": by_channel,
             "discounts": discounts,
             "customers": customers,
@@ -594,6 +599,105 @@ class BookAnalyticsService:
                 )
         by_warehouse.sort(key=lambda r: (r["copies_sold"], r["current_stock"]), reverse=True)
         return by_warehouse
+
+    def _period_bounds(self):
+        f = self.filters
+        if not f.start_date or not f.end_date:
+            return None, None
+        start_dt = timezone.make_aware(datetime.combine(f.start_date, datetime.min.time()))
+        end_dt = timezone.make_aware(datetime.combine(f.end_date, datetime.max.time()))
+        return start_dt, end_dt
+
+    def _enrich_warehouse_ledger(self, by_warehouse: list[dict]) -> list[dict]:
+        from inventory.models import StockMovement
+        from inventory.services.stock_ledger import opening_closing_stock, movement_type_totals
+
+        start_dt, end_dt = self._period_bounds()
+        warehouse_filter = self.filters.warehouse_id
+
+        for row in by_warehouse:
+            wh_id = row.get("warehouse_id")
+            if warehouse_filter and wh_id != warehouse_filter:
+                continue
+            if not wh_id:
+                row.update({
+                    "opening_stock": None,
+                    "closing_stock": row.get("current_stock", 0),
+                    "sold": 0,
+                    "returned": 0,
+                    "transferred_in": 0,
+                    "transferred_out": 0,
+                    "damaged": 0,
+                    "lost": 0,
+                    "adjusted": 0,
+                    "complimentary_issued": 0,
+                })
+                continue
+
+            oc = opening_closing_stock(
+                product_id=self.product_id,
+                warehouse_id=wh_id,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                current_quantity=int(row.get("current_stock") or 0),
+            )
+            totals = movement_type_totals(
+                product_id=self.product_id,
+                warehouse_id=wh_id,
+                start_dt=start_dt,
+                end_dt=end_dt,
+            )
+            MT = StockMovement.MovementType
+            row.update({
+                "opening_stock": oc["opening_stock"],
+                "closing_stock": oc["closing_stock"] if end_dt else int(row.get("current_stock") or 0),
+                "sold": abs(min(0, totals.get(MT.SALE, 0))),
+                "returned": max(0, totals.get(MT.RETURN, 0) + totals.get(MT.RESTOCK, 0)),
+                "transferred_in": max(0, totals.get(MT.TRANSFER_IN, 0)),
+                "transferred_out": abs(min(0, totals.get(MT.TRANSFER_OUT, 0))),
+                "damaged": abs(min(0, totals.get(MT.DAMAGE, 0))),
+                "lost": abs(min(0, totals.get(MT.LOSS, 0))),
+                "adjusted": totals.get(MT.ADJUSTMENT, 0),
+                "complimentary_issued": abs(min(0, totals.get(MT.COMPLIMENTARY, 0))),
+            })
+        return by_warehouse
+
+    def _stock_summary(self, stock_rows: list[Inventory]) -> dict[str, Any]:
+        from inventory.models import StockMovement
+        from inventory.services.stock_ledger import opening_closing_stock, movement_type_totals
+
+        start_dt, end_dt = self._period_bounds()
+        warehouse_id = self.filters.warehouse_id
+        current = sum(int(r.quantity or 0) for r in stock_rows if not warehouse_id or r.warehouse_id == warehouse_id)
+        oc = opening_closing_stock(
+            product_id=self.product_id,
+            warehouse_id=warehouse_id,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            current_quantity=current,
+        )
+        totals = movement_type_totals(
+            product_id=self.product_id,
+            warehouse_id=warehouse_id,
+            start_dt=start_dt,
+            end_dt=end_dt,
+        )
+        MT = StockMovement.MovementType
+        return {
+            "opening_stock": oc["opening_stock"],
+            "closing_stock": oc["closing_stock"] if end_dt else current,
+            "current_stock": current,
+            "period_net_delta": oc["period_net_delta"],
+            "sold": abs(min(0, totals.get(MT.SALE, 0))),
+            "returned": max(0, totals.get(MT.RETURN, 0) + totals.get(MT.RESTOCK, 0)),
+            "transferred_in": max(0, totals.get(MT.TRANSFER_IN, 0)),
+            "transferred_out": abs(min(0, totals.get(MT.TRANSFER_OUT, 0))),
+            "damaged": abs(min(0, totals.get(MT.DAMAGE, 0))),
+            "lost": abs(min(0, totals.get(MT.LOSS, 0))),
+            "adjusted": totals.get(MT.ADJUSTMENT, 0),
+            "complimentary_issued": abs(min(0, totals.get(MT.COMPLIMENTARY, 0))),
+            "ledger_complete": StockMovement.objects.filter(product_id=self.product_id).exists(),
+        }
 
     def _transfer_rows(self, transfers: list[Transfer]) -> list[dict[str, Any]]:
         rows = []

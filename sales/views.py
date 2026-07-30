@@ -193,23 +193,25 @@ class InvoiceDeleteView(BaseDeleteView):
                 technical_errors: list[dict] = []
 
                 if needs_inventory and invoice.warehouse_id:
+                    from inventory.models import StockMovement
+                    from inventory.services.stock_ledger import apply_delta
+
                     warehouse_id = invoice.warehouse_id
                     for product_id, quantity in qty_by_product.items():
                         if quantity <= 0:
                             continue
                         try:
-                            inv, _created = Inventory.objects.select_for_update().get_or_create(
+                            apply_delta(
                                 product_id=product_id,
                                 warehouse_id=warehouse_id,
-                                defaults={
-                                    "quantity": 0,
-                                    "created_by": request.user,
-                                    "updated_by": request.user,
-                                },
+                                delta=int(quantity),
+                                movement_type=StockMovement.MovementType.RESTOCK,
+                                user=request.user,
+                                invoice_id=invoice.id,
+                                reference_code=invoice.composite_id or str(invoice.id),
+                                notes="Invoice deleted — stock restored",
+                                allow_negative=False,
                             )
-                            inv.quantity = int(inv.quantity or 0) + quantity
-                            inv.updated_by = request.user
-                            inv.save(update_fields=["quantity", "updated_by", "updated_at"])
                         except Exception as exc:
                             conflict_product_ids.append(product_id)
                             technical_errors.append(
@@ -319,7 +321,37 @@ class ReturnListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+        from datetime import datetime
+        from inventory.models import StockMovement
+        from inventory.services.stock_ledger import apply_delta
+
+        with transaction.atomic():
+            ret = serializer.save(created_by=self.request.user, updated_by=self.request.user)
+            item = ret.invoice_item
+            invoice = item.invoice if item else None
+            warehouse_id = invoice.warehouse_id if invoice else None
+            product_id = item.product_id if item else None
+            qty = int(ret.returned_quantity or 0)
+
+            if warehouse_id and product_id and qty > 0:
+                occurred = None
+                if ret.return_date:
+                    occurred = timezone.make_aware(
+                        datetime.combine(ret.return_date, datetime.min.time())
+                    )
+                apply_delta(
+                    product_id=product_id,
+                    warehouse_id=warehouse_id,
+                    delta=qty,
+                    movement_type=StockMovement.MovementType.RETURN,
+                    user=self.request.user,
+                    occurred_at=occurred,
+                    invoice_id=invoice.id if invoice else None,
+                    invoice_item_id=item.id if item else None,
+                    return_id=ret.id,
+                    reference_code=(invoice.composite_id if invoice else "") or "",
+                    notes="Customer return restocked to warehouse",
+                )
 
 class ReturnUpdateView(generics.UpdateAPIView):
     queryset = Return.objects.all().order_by('id')

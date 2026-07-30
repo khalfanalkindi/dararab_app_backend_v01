@@ -15,7 +15,7 @@ from backend.exception_handler import error_response
 from .models import (
     PrintRun, Project, Product, Stakeholder, Warehouse, Inventory, Transfer,
     Author, Translator, RightsOwner, Reviewer,
-    Contract, PrintTask
+    Contract, PrintTask, StockMovement
 )
 from .serializers import (
     POSProductSummarySerializer, PrintRunSerializer, ProductSummarySerializer, ProjectSerializer, ProductSerializer, StakeholderSerializer, WarehouseSerializer,
@@ -1866,3 +1866,159 @@ class POSProductViewSet(viewsets.ModelViewSet):
         context['warehouse_id'] = self.request.query_params.get('warehouse_id')
         return context
 
+
+# ============================== Stock write-offs ==============================
+
+WRITEOFF_TYPES = {
+    StockMovement.MovementType.DAMAGE,
+    StockMovement.MovementType.LOSS,
+    StockMovement.MovementType.RESERVED,
+}
+
+
+class StockWriteoffListCreateView(APIView):
+    """
+    Register non-sale stock exits: damaged / lost / reserved.
+
+    POST /api/inventory/stock-writeoffs/
+    GET  /api/inventory/stock-writeoffs/
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = (
+            StockMovement.objects.filter(movement_type__in=WRITEOFF_TYPES)
+            .select_related("product", "warehouse", "created_by")
+            .order_by("-occurred_at", "-id")
+        )
+        movement_type = (request.query_params.get("movement_type") or "").strip()
+        if movement_type:
+            if movement_type not in WRITEOFF_TYPES:
+                return Response(
+                    {"detail": "Invalid movement_type filter."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(movement_type=movement_type)
+
+        try:
+            page = max(1, int(request.query_params.get("page") or 1))
+            page_size = min(100, max(1, int(request.query_params.get("page_size") or 25)))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "page and page_size must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        total = qs.count()
+        start = (page - 1) * page_size
+        rows = qs[start : start + page_size]
+        results = [
+            {
+                "id": row.id,
+                "product_id": row.product_id,
+                "product_title": (
+                    (row.product.title_en or row.product.title_ar or row.product.isbn)
+                    if row.product
+                    else None
+                ),
+                "isbn": row.product.isbn if row.product else None,
+                "warehouse_id": row.warehouse_id,
+                "warehouse_name": row.warehouse.name_en if row.warehouse else None,
+                "movement_type": row.movement_type,
+                "quantity": abs(int(row.quantity_delta or 0)),
+                "quantity_before": row.quantity_before,
+                "quantity_after": row.quantity_after,
+                "reason": row.notes,
+                "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
+                "created_by": (
+                    getattr(row.created_by, "username", None) if row.created_by else None
+                ),
+            }
+            for row in rows
+        ]
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "results": results,
+            }
+        )
+
+    def post(self, request):
+        from inventory.services.stock_ledger import apply_delta, StockLedgerError
+
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            product_id = int(data.get("product_id"))
+            warehouse_id = int(data.get("warehouse_id"))
+            quantity = int(data.get("quantity"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "product_id, warehouse_id, and quantity must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        movement_type = (data.get("movement_type") or "").strip()
+        reason = (data.get("reason") or "").strip()
+
+        if movement_type not in WRITEOFF_TYPES:
+            return Response(
+                {"detail": "movement_type must be one of: damage, loss, reserved."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if quantity <= 0:
+            return Response(
+                {"detail": "quantity must be greater than 0."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not reason:
+            return Response(
+                {"detail": "reason is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not Product.objects.filter(pk=product_id).exists():
+            return Response({"detail": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not Warehouse.objects.filter(pk=warehouse_id).exists():
+            return Response({"detail": "Warehouse not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            with transaction.atomic():
+                movement = apply_delta(
+                    product_id=product_id,
+                    warehouse_id=warehouse_id,
+                    delta=-quantity,
+                    movement_type=movement_type,
+                    user=request.user,
+                    notes=reason,
+                    reference_code=f"writeoff:{movement_type}",
+                )
+        except StockLedgerError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        inv = Inventory.objects.filter(
+            product_id=product_id, warehouse_id=warehouse_id
+        ).first()
+        return Response(
+            {
+                "detail": "Stock write-off recorded.",
+                "movement": {
+                    "id": movement.id,
+                    "product_id": movement.product_id,
+                    "warehouse_id": movement.warehouse_id,
+                    "movement_type": movement.movement_type,
+                    "quantity": quantity,
+                    "quantity_before": movement.quantity_before,
+                    "quantity_after": movement.quantity_after,
+                    "reason": movement.notes,
+                    "occurred_at": (
+                        movement.occurred_at.isoformat() if movement.occurred_at else None
+                    ),
+                    "current_stock": int(inv.quantity or 0) if inv else movement.quantity_after,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )

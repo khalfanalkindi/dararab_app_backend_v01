@@ -629,6 +629,7 @@ class BookAnalyticsService:
                     "transferred_out": 0,
                     "damaged": 0,
                     "lost": 0,
+                    "reserved": 0,
                     "adjusted": 0,
                     "complimentary_issued": 0,
                 })
@@ -657,6 +658,7 @@ class BookAnalyticsService:
                 "transferred_out": abs(min(0, totals.get(MT.TRANSFER_OUT, 0))),
                 "damaged": abs(min(0, totals.get(MT.DAMAGE, 0))),
                 "lost": abs(min(0, totals.get(MT.LOSS, 0))),
+                "reserved": abs(min(0, totals.get(MT.RESERVED, 0))),
                 "adjusted": totals.get(MT.ADJUSTMENT, 0),
                 "complimentary_issued": abs(min(0, totals.get(MT.COMPLIMENTARY, 0))),
             })
@@ -694,6 +696,7 @@ class BookAnalyticsService:
             "transferred_out": abs(min(0, totals.get(MT.TRANSFER_OUT, 0))),
             "damaged": abs(min(0, totals.get(MT.DAMAGE, 0))),
             "lost": abs(min(0, totals.get(MT.LOSS, 0))),
+            "reserved": abs(min(0, totals.get(MT.RESERVED, 0))),
             "adjusted": totals.get(MT.ADJUSTMENT, 0),
             "complimentary_issued": abs(min(0, totals.get(MT.COMPLIMENTARY, 0))),
             "ledger_complete": StockMovement.objects.filter(product_id=self.product_id).exists(),

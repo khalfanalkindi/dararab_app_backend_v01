@@ -241,6 +241,7 @@ class StockMovement(AuditModel):
         ADJUSTMENT = "adjustment", "Adjustment"
         DAMAGE = "damage", "Damage"
         LOSS = "loss", "Loss"
+        RESERVED = "reserved", "Reserved"
         COMPLIMENTARY = "complimentary", "Complimentary"
         RESTOCK = "restock", "Restock"
 

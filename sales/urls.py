@@ -43,6 +43,7 @@ urlpatterns = [
     path("invoices/partial-payments/", views.PartialPaymentInvoiceListView.as_view(), name="partial-payment-invoices"),
     path("invoices/outstanding-payments/", views.OutstandingPaymentInvoiceListView.as_view(), name="outstanding-payment-invoices"),
     path("invoices/<int:parent_invoice_id>/generate-child/", views.GenerateChildInvoiceView.as_view(), name="generate-child-invoice"),
+    path("invoices/<int:invoice_id>/settle/", views.SettleInvoiceView.as_view(), name="invoice-settle"),
     path("invoices/<int:pk>/payment-status/", views.InvoicePaymentStatusView.as_view(), name="invoice-payment-status"),
     
     # Debug endpoint

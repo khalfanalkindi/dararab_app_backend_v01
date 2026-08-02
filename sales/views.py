@@ -974,6 +974,48 @@ class GenerateChildInvoiceView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+
+class SettleInvoiceView(APIView):
+    """
+    Settle one outstanding invoice into a paid child bill.
+
+    POST /api/sales/invoices/<invoice_id>/settle/
+
+    - Per invoice only (no multi-invoice body)
+    - Settles ALL unpaid lines on that invoice
+    - Creates child + payment and marks parent lines paid (atomic)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, invoice_id: int):
+        from sales.services.settle_invoice import SettleInvoiceError, settle_invoice
+
+        try:
+            result = settle_invoice(invoice_id=invoice_id, user=request.user)
+        except SettleInvoiceError as exc:
+            return Response({"detail": exc.detail}, status=exc.status_code)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        child = (
+            Invoice.objects.select_related(
+                "customer", "warehouse", "invoice_type", "payment_method", "main_invoice"
+            )
+            .prefetch_related("invoiceitem_set", "invoiceitem_set__product")
+            .get(pk=result["child_invoice_id"])
+        )
+        serializer = InvoiceSummarySerializer(child, context={"request": request})
+        return Response(
+            {
+                "detail": "Invoice settled successfully.",
+                "settlement": result,
+                "child_invoice": serializer.data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class InvoicePaymentStatusView(generics.RetrieveAPIView):
     """Get detailed payment status for an invoice"""
     serializer_class = InvoiceSerializer

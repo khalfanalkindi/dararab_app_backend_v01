@@ -44,6 +44,9 @@ urlpatterns = [
     path("inventory/product/<int:product_id>/update/", views.InventoryUpdateByProductView.as_view(), name="inventory-update-by-product"),
     path("inventory/product/<int:product_id>/delete/", views.InventoryDeleteByProductView.as_view(), name="inventory-delete-by-product"),
 
+    ### ===== Stock write-offs (damage / loss / reserved) =====
+    path("stock-writeoffs/", views.StockWriteoffListCreateView.as_view(), name="stock-writeoff-list-create"),
+
     ### ===== Transfer =====
     path("transfer-preview/", views.TransferPreviewView.as_view(), name="transfer-preview"),
     path("transfers/", views.TransferListCreateView.as_view(), name="transfer-list-create"),

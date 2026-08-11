@@ -43,6 +43,7 @@ urlpatterns = [
     path("invoices/partial-payments/", views.PartialPaymentInvoiceListView.as_view(), name="partial-payment-invoices"),
     path("invoices/outstanding-payments/", views.OutstandingPaymentInvoiceListView.as_view(), name="outstanding-payment-invoices"),
     path("invoices/<int:parent_invoice_id>/generate-child/", views.GenerateChildInvoiceView.as_view(), name="generate-child-invoice"),
+    path("invoices/<int:invoice_id>/settle/", views.SettleInvoiceView.as_view(), name="invoice-settle"),
     path("invoices/<int:pk>/payment-status/", views.InvoicePaymentStatusView.as_view(), name="invoice-payment-status"),
     
     # Debug endpoint
@@ -55,6 +56,13 @@ urlpatterns = [
     path("product-sales-stats/<int:product_id>/", views.ProductSalesStatsDetailView.as_view(), name="product-sales-stats-detail"),
     path("product-sales-stats/<int:product_id>/recalculate/", views.ProductSalesStatsRecalculateView.as_view(), name="product-sales-stats-recalculate"),
     path("product-sales-stats/recalculate-all/", views.ProductSalesStatsRecalculateAllView.as_view(), name="product-sales-stats-recalculate-all"),
+
+    # Book Sales Analytics (title-level)
+    path(
+        "products/<int:product_id>/analytics/",
+        views.BookAnalyticsView.as_view(),
+        name="book-analytics",
+    ),
     
     # Royalties Calculation
     path("calculate-royalties/", views.CalculateRoyaltiesView.as_view(), name="calculate-royalties"),

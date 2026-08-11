@@ -15,7 +15,7 @@ from backend.exception_handler import error_response
 from .models import (
     PrintRun, Project, Product, Stakeholder, Warehouse, Inventory, Transfer,
     Author, Translator, RightsOwner, Reviewer,
-    Contract, PrintTask
+    Contract, PrintTask, StockMovement
 )
 from .serializers import (
     POSProductSummarySerializer, PrintRunSerializer, ProductSummarySerializer, ProjectSerializer, ProductSerializer, StakeholderSerializer, WarehouseSerializer,
@@ -1003,70 +1003,71 @@ class InventoryBulkUpsertView(APIView):
 
         # Process all items in a single transaction
         try:
+            from inventory.models import StockMovement
+            from inventory.services.stock_ledger import set_absolute_quantity, ALLOWED_MOVEMENT_TYPES
+
             with transaction.atomic():
                 for index, item_data in enumerate(validated_data):
                     pk = item_data.get("id")
-                    
+                    movement_type = (
+                        item_data.get("movement_type")
+                        or StockMovement.MovementType.ADJUSTMENT
+                    )
+                    if movement_type not in ALLOWED_MOVEMENT_TYPES:
+                        raise serializers.ValidationError(
+                            {f"index_{index}": f"Invalid movement_type: {movement_type}"}
+                        )
+                    invoice_id = item_data.get("invoice_id")
+                    invoice_item_id = item_data.get("invoice_item_id")
+                    notes = item_data.get("notes") or ""
+                    reference_code = item_data.get("reference_code") or ""
+
                     if pk:
-                        # Update existing inventory
                         try:
-                            instance = Inventory.objects.get(pk=pk)
-                            serializer = InventorySerializer(
-                                instance,
-                                data=item_data,
-                                partial=True,
-                                context={"request": request},
-                            )
-                            serializer.is_valid(raise_exception=True)
-                            serializer.save(updated_by=request.user)
-                            results.append(serializer.data)
+                            instance = Inventory.objects.select_for_update().get(pk=pk)
                         except Inventory.DoesNotExist:
                             raise serializers.ValidationError(
                                 {f"index_{index}": f"Inventory with id {pk} not found."}
                             )
+                        product_id = instance.product_id
+                        warehouse_id = instance.warehouse_id
+                        new_quantity = int(item_data.get("quantity", 0))
+                        set_absolute_quantity(
+                            product_id=product_id,
+                            warehouse_id=warehouse_id,
+                            new_quantity=new_quantity,
+                            movement_type=movement_type,
+                            user=request.user,
+                            notes=notes,
+                            reference_code=reference_code,
+                            invoice_id=invoice_id,
+                            invoice_item_id=invoice_item_id,
+                        )
+                        instance.refresh_from_db()
+                        serializer = InventorySerializer(instance, context={"request": request})
+                        results.append(serializer.data)
                     else:
-                        # Create new inventory or update existing (handles unique_together constraint)
                         product_id = item_data.get("product_id")
                         warehouse_id = item_data.get("warehouse_id")
-                        quantity = item_data.get("quantity", 0)
-                        
-                        # Check if inventory already exists for this product+warehouse combination
-                        # Due to unique_together constraint, only one inventory per product+warehouse
-                        existing = Inventory.objects.filter(
+                        new_quantity = int(item_data.get("quantity", 0))
+                        set_absolute_quantity(
                             product_id=product_id,
-                            warehouse_id=warehouse_id
-                        ).first()
-                        
-                        if existing:
-                            # Update existing inventory - replace quantity with new value
-                            # This ensures one inventory record per product+warehouse combination
-                            old_quantity = existing.quantity
-                            serializer = InventorySerializer(
-                                existing,
-                                data=item_data,
-                                partial=True,
-                                context={"request": request},
-                            )
-                            serializer.is_valid(raise_exception=True)
-                            serializer.save(updated_by=request.user)
-                            result_data = serializer.data
-                            result_data['_action'] = 'updated'
-                            result_data['_old_quantity'] = old_quantity
-                            results.append(result_data)
-                        else:
-                            # Create new inventory
-                            serializer = InventorySerializer(
-                                data=item_data,
-                                context={"request": request},
-                            )
-                            serializer.is_valid(raise_exception=True)
-                            serializer.save(
-                                created_by=request.user,
-                                updated_by=request.user,
-                            )
-                            result_data = serializer.data
-                            result_data['_action'] = 'created'
-                            results.append(result_data)
+                            warehouse_id=warehouse_id,
+                            new_quantity=new_quantity,
+                            movement_type=movement_type,
+                            user=request.user,
+                            notes=notes,
+                            reference_code=reference_code,
+                            invoice_id=invoice_id,
+                            invoice_item_id=invoice_item_id,
+                        )
+                        inv = Inventory.objects.get(
+                            product_id=product_id, warehouse_id=warehouse_id
+                        )
+                        serializer = InventorySerializer(inv, context={"request": request})
+                        result_data = serializer.data
+                        result_data["_action"] = "upserted"
+                        results.append(result_data)
 
             return Response(
                 {
@@ -1136,11 +1137,14 @@ class InventoryDeleteByProductView(generics.DestroyAPIView):
 
 # ============================== Transfer ==============================
 
-def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity, user):
+def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity, user, transfer_id=None, occurred_at=None):
     """
-    Move stock between warehouses under row locks.
+    Move stock between warehouses under row locks and append ledger rows.
     Raises serializers.ValidationError on insufficient quantity / same warehouse.
     """
+    from inventory.models import StockMovement
+    from inventory.services.stock_ledger import apply_delta
+
     if from_warehouse.id == to_warehouse.id:
         raise serializers.ValidationError(
             {"warehouses": "From and to warehouses must be different"}
@@ -1148,34 +1152,26 @@ def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity
     if quantity <= 0:
         raise serializers.ValidationError({"quantity": "Quantity must be greater than 0"})
 
-    from_inventory, _ = Inventory.objects.select_for_update().get_or_create(
-        product=product,
-        warehouse=from_warehouse,
-        defaults={"quantity": 0},
+    apply_delta(
+        product_id=product.id,
+        warehouse_id=from_warehouse.id,
+        delta=-int(quantity),
+        movement_type=StockMovement.MovementType.TRANSFER_OUT,
+        user=user,
+        occurred_at=occurred_at,
+        transfer_id=transfer_id,
+        notes=f"Transfer out to warehouse {to_warehouse.id}",
     )
-    if from_inventory.quantity < quantity:
-        raise serializers.ValidationError({
-            "quantity": (
-                f"Insufficient inventory. Available: {from_inventory.quantity}, "
-                f"Requested: {quantity}"
-            )
-        })
-
-    to_inventory, _ = Inventory.objects.select_for_update().get_or_create(
-        product=product,
-        warehouse=to_warehouse,
-        defaults={"quantity": 0},
+    apply_delta(
+        product_id=product.id,
+        warehouse_id=to_warehouse.id,
+        delta=int(quantity),
+        movement_type=StockMovement.MovementType.TRANSFER_IN,
+        user=user,
+        occurred_at=occurred_at,
+        transfer_id=transfer_id,
+        notes=f"Transfer in from warehouse {from_warehouse.id}",
     )
-
-    from_inventory.quantity -= quantity
-    from_inventory.updated_by = user
-    from_inventory.save(update_fields=["quantity", "updated_by", "updated_at"])
-
-    to_inventory.quantity += quantity
-    to_inventory.updated_by = user
-    to_inventory.save(update_fields=["quantity", "updated_by", "updated_at"])
-
-    return from_inventory, to_inventory
 
 
 def _format_transfer_error_reason(detail) -> str:
@@ -1217,6 +1213,8 @@ class TransferListCreateView(generics.ListCreateAPIView):
                 to_warehouse=transfer.to_warehouse,
                 quantity=transfer.quantity,
                 user=self.request.user,
+                transfer_id=transfer.id,
+                occurred_at=transfer.transfer_date,
             )
 
 
@@ -1337,14 +1335,6 @@ class TransferBulkCreateView(APIView):
                                     {"to_warehouse_id": f"Warehouse with id {to_warehouse_id} not found"}
                                 )
 
-                            _apply_transfer_inventory(
-                                product=product,
-                                from_warehouse=from_warehouse,
-                                to_warehouse=to_warehouse,
-                                quantity=quantity,
-                                user=request.user,
-                            )
-
                             transfer = Transfer.objects.create(
                                 product=product,
                                 from_warehouse=from_warehouse,
@@ -1354,6 +1344,16 @@ class TransferBulkCreateView(APIView):
                                 transfer_date=transfer_data.get('transfer_date') or timezone.now(),
                                 created_by=request.user,
                                 updated_by=request.user,
+                            )
+
+                            _apply_transfer_inventory(
+                                product=product,
+                                from_warehouse=from_warehouse,
+                                to_warehouse=to_warehouse,
+                                quantity=quantity,
+                                user=request.user,
+                                transfer_id=transfer.id,
+                                occurred_at=transfer.transfer_date,
                             )
 
                             succeeded.append({
@@ -1865,4 +1865,161 @@ class POSProductViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context['warehouse_id'] = self.request.query_params.get('warehouse_id')
         return context
+
+
+# ============================== Stock write-offs ==============================
+
+WRITEOFF_TYPES = {
+    StockMovement.MovementType.DAMAGE,
+    StockMovement.MovementType.LOSS,
+    StockMovement.MovementType.RESERVED,
+}
+
+
+class StockWriteoffListCreateView(APIView):
+    """
+    Register non-sale stock exits: damaged / lost / reserved.
+
+    GET  /api/inventory/stock-writeoffs/
+    POST /api/inventory/stock-writeoffs/
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = (
+            StockMovement.objects.filter(movement_type__in=WRITEOFF_TYPES)
+            .select_related("product", "warehouse", "created_by")
+            .order_by("-occurred_at", "-id")
+        )
+        movement_type = (request.query_params.get("movement_type") or "").strip()
+        if movement_type:
+            if movement_type not in WRITEOFF_TYPES:
+                return Response(
+                    {"detail": "Invalid movement_type filter."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(movement_type=movement_type)
+
+        try:
+            page = max(1, int(request.query_params.get("page") or 1))
+            page_size = min(100, max(1, int(request.query_params.get("page_size") or 25)))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "page and page_size must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        total = qs.count()
+        start = (page - 1) * page_size
+        rows = qs[start : start + page_size]
+        results = [
+            {
+                "id": row.id,
+                "product_id": row.product_id,
+                "product_title": (
+                    (row.product.title_en or row.product.title_ar or row.product.isbn)
+                    if row.product
+                    else None
+                ),
+                "isbn": row.product.isbn if row.product else None,
+                "warehouse_id": row.warehouse_id,
+                "warehouse_name": row.warehouse.name_en if row.warehouse else None,
+                "movement_type": row.movement_type,
+                "quantity": abs(int(row.quantity_delta or 0)),
+                "quantity_before": row.quantity_before,
+                "quantity_after": row.quantity_after,
+                "reason": row.notes,
+                "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
+                "created_by": (
+                    getattr(row.created_by, "username", None) if row.created_by else None
+                ),
+            }
+            for row in rows
+        ]
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "results": results,
+            }
+        )
+
+    def post(self, request):
+        from inventory.services.stock_ledger import apply_delta, StockLedgerError
+
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            product_id = int(data.get("product_id"))
+            warehouse_id = int(data.get("warehouse_id"))
+            quantity = int(data.get("quantity"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "product_id, warehouse_id, and quantity must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        movement_type = (data.get("movement_type") or "").strip()
+        reason = (data.get("reason") or "").strip()
+
+        if movement_type not in WRITEOFF_TYPES:
+            return Response(
+                {"detail": "movement_type must be one of: damage, loss, reserved."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if quantity <= 0:
+            return Response(
+                {"detail": "quantity must be greater than 0."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not reason:
+            return Response(
+                {"detail": "reason is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not Product.objects.filter(pk=product_id).exists():
+            return Response({"detail": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not Warehouse.objects.filter(pk=warehouse_id).exists():
+            return Response({"detail": "Warehouse not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            with transaction.atomic():
+                movement = apply_delta(
+                    product_id=product_id,
+                    warehouse_id=warehouse_id,
+                    delta=-quantity,
+                    movement_type=movement_type,
+                    user=request.user,
+                    notes=reason,
+                    reference_code=f"writeoff:{movement_type}",
+                )
+        except StockLedgerError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        inv = Inventory.objects.filter(
+            product_id=product_id, warehouse_id=warehouse_id
+        ).first()
+        return Response(
+            {
+                "detail": "Stock write-off recorded.",
+                "movement": {
+                    "id": movement.id,
+                    "product_id": movement.product_id,
+                    "warehouse_id": movement.warehouse_id,
+                    "movement_type": movement.movement_type,
+                    "quantity": quantity,
+                    "quantity_before": movement.quantity_before,
+                    "quantity_after": movement.quantity_after,
+                    "reason": movement.notes,
+                    "occurred_at": (
+                        movement.occurred_at.isoformat() if movement.occurred_at else None
+                    ),
+                    "current_stock": int(inv.quantity or 0) if inv else movement.quantity_after,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
 

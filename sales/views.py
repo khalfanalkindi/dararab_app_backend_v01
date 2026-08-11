@@ -193,23 +193,25 @@ class InvoiceDeleteView(BaseDeleteView):
                 technical_errors: list[dict] = []
 
                 if needs_inventory and invoice.warehouse_id:
+                    from inventory.models import StockMovement
+                    from inventory.services.stock_ledger import apply_delta
+
                     warehouse_id = invoice.warehouse_id
                     for product_id, quantity in qty_by_product.items():
                         if quantity <= 0:
                             continue
                         try:
-                            inv, _created = Inventory.objects.select_for_update().get_or_create(
+                            apply_delta(
                                 product_id=product_id,
                                 warehouse_id=warehouse_id,
-                                defaults={
-                                    "quantity": 0,
-                                    "created_by": request.user,
-                                    "updated_by": request.user,
-                                },
+                                delta=int(quantity),
+                                movement_type=StockMovement.MovementType.RESTOCK,
+                                user=request.user,
+                                invoice_id=invoice.id,
+                                reference_code=invoice.composite_id or str(invoice.id),
+                                notes="Invoice deleted — stock restored",
+                                allow_negative=False,
                             )
-                            inv.quantity = int(inv.quantity or 0) + quantity
-                            inv.updated_by = request.user
-                            inv.save(update_fields=["quantity", "updated_by", "updated_at"])
                         except Exception as exc:
                             conflict_product_ids.append(product_id)
                             technical_errors.append(
@@ -319,7 +321,37 @@ class ReturnListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+        from datetime import datetime
+        from inventory.models import StockMovement
+        from inventory.services.stock_ledger import apply_delta
+
+        with transaction.atomic():
+            ret = serializer.save(created_by=self.request.user, updated_by=self.request.user)
+            item = ret.invoice_item
+            invoice = item.invoice if item else None
+            warehouse_id = invoice.warehouse_id if invoice else None
+            product_id = item.product_id if item else None
+            qty = int(ret.returned_quantity or 0)
+
+            if warehouse_id and product_id and qty > 0:
+                occurred = None
+                if ret.return_date:
+                    occurred = timezone.make_aware(
+                        datetime.combine(ret.return_date, datetime.min.time())
+                    )
+                apply_delta(
+                    product_id=product_id,
+                    warehouse_id=warehouse_id,
+                    delta=qty,
+                    movement_type=StockMovement.MovementType.RETURN,
+                    user=self.request.user,
+                    occurred_at=occurred,
+                    invoice_id=invoice.id if invoice else None,
+                    invoice_item_id=item.id if item else None,
+                    return_id=ret.id,
+                    reference_code=(invoice.composite_id if invoice else "") or "",
+                    notes="Customer return restocked to warehouse",
+                )
 
 class ReturnUpdateView(generics.UpdateAPIView):
     queryset = Return.objects.all().order_by('id')
@@ -942,6 +974,48 @@ class GenerateChildInvoiceView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+
+class SettleInvoiceView(APIView):
+    """
+    Settle one outstanding invoice into a paid child bill.
+
+    POST /api/sales/invoices/<invoice_id>/settle/
+
+    - Per invoice only (no multi-invoice body)
+    - Settles ALL unpaid lines on that invoice
+    - Creates child + payment and marks parent lines paid (atomic)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, invoice_id: int):
+        from sales.services.settle_invoice import SettleInvoiceError, settle_invoice
+
+        try:
+            result = settle_invoice(invoice_id=invoice_id, user=request.user)
+        except SettleInvoiceError as exc:
+            return Response({"detail": exc.detail}, status=exc.status_code)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        child = (
+            Invoice.objects.select_related(
+                "customer", "warehouse", "invoice_type", "payment_method", "main_invoice"
+            )
+            .prefetch_related("invoiceitem_set", "invoiceitem_set__product")
+            .get(pk=result["child_invoice_id"])
+        )
+        serializer = InvoiceSummarySerializer(child, context={"request": request})
+        return Response(
+            {
+                "detail": "Invoice settled successfully.",
+                "settlement": result,
+                "child_invoice": serializer.data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class InvoicePaymentStatusView(generics.RetrieveAPIView):
     """Get detailed payment status for an invoice"""
     serializer_class = InvoiceSerializer
@@ -1211,6 +1285,88 @@ class ProductSalesStatsRecalculateAllView(APIView):
                 {"error": str(e)}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+class BookAnalyticsView(APIView):
+    """
+    Title-level book sales analytics (Phase 1).
+
+    GET /api/sales/products/<product_id>/analytics/
+      ?start_date=&end_date=&warehouse_id=&customer_id=&customer_type_id=
+      &invoice_type_id=&payment_status=&invoice_search=
+      &discount_min=&discount_max=&page=&page_size=
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, product_id: int):
+        from sales.services import BookAnalyticsError, BookAnalyticsService
+
+        try:
+            filters = self._parse_filters(request)
+            payload = BookAnalyticsService(product_id, filters).build()
+            return Response(payload, status=status.HTTP_200_OK)
+        except BookAnalyticsError as exc:
+            message = str(exc)
+            code = (
+                status.HTTP_404_NOT_FOUND
+                if message == "Product not found"
+                else status.HTTP_400_BAD_REQUEST
+            )
+            return Response({"detail": message}, status=code)
+
+    def _parse_filters(self, request):
+        from sales.services import BookAnalyticsError
+        from sales.services.book_analytics import BookAnalyticsFilters
+
+        qp = request.query_params
+
+        def opt_int(name: str):
+            raw = qp.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError) as exc:
+                raise BookAnalyticsError(f"{name} must be an integer") from exc
+
+        def opt_decimal(name: str):
+            raw = qp.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return Decimal(str(raw))
+            except Exception as exc:
+                raise BookAnalyticsError(f"{name} must be a number") from exc
+
+        def opt_date(name: str):
+            raw = qp.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return datetime.strptime(raw.strip(), "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise BookAnalyticsError(f"{name} must be in YYYY-MM-DD format") from exc
+
+        page = opt_int("page") or 1
+        page_size = opt_int("page_size") or 50
+        payment_status = (qp.get("payment_status") or "").strip().lower() or None
+
+        return BookAnalyticsFilters(
+            start_date=opt_date("start_date"),
+            end_date=opt_date("end_date"),
+            warehouse_id=opt_int("warehouse_id"),
+            customer_id=opt_int("customer_id"),
+            customer_type_id=opt_int("customer_type_id"),
+            invoice_type_id=opt_int("invoice_type_id"),
+            payment_status=payment_status,
+            invoice_search=(qp.get("invoice_search") or "").strip() or None,
+            discount_min=opt_decimal("discount_min"),
+            discount_max=opt_decimal("discount_max"),
+            page=page,
+            page_size=page_size,
+        )
+
 
 class CalculateRoyaltiesView(APIView):
     """

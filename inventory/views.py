@@ -1137,6 +1137,43 @@ class InventoryDeleteByProductView(generics.DestroyAPIView):
 
 # ============================== Transfer ==============================
 
+def _coerce_transfer_quantity(raw) -> int:
+    try:
+        qty = int(raw)
+    except (TypeError, ValueError):
+        raise serializers.ValidationError({"quantity": "Quantity must be a valid integer"})
+    if qty <= 0:
+        raise serializers.ValidationError({"quantity": "Quantity must be greater than 0"})
+    return qty
+
+
+def _coerce_transfer_occurred_at(raw):
+    from datetime import date, datetime
+    from django.utils.dateparse import parse_date, parse_datetime
+
+    if raw is None:
+        return timezone.now()
+    if isinstance(raw, datetime):
+        if timezone.is_naive(raw):
+            return timezone.make_aware(raw)
+        return raw
+    if isinstance(raw, date):
+        return timezone.make_aware(datetime.combine(raw, datetime.min.time()))
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return timezone.now()
+        parsed = parse_datetime(text)
+        if parsed is not None:
+            if timezone.is_naive(parsed):
+                return timezone.make_aware(parsed)
+            return parsed
+        day = parse_date(text)
+        if day is not None:
+            return timezone.make_aware(datetime.combine(day, datetime.min.time()))
+    raise serializers.ValidationError({"transfer_date": "Invalid transfer date"})
+
+
 def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity, user, transfer_id=None, occurred_at=None):
     """
     Move stock between warehouses under row locks and append ledger rows.
@@ -1149,26 +1186,27 @@ def _apply_transfer_inventory(*, product, from_warehouse, to_warehouse, quantity
         raise serializers.ValidationError(
             {"warehouses": "From and to warehouses must be different"}
         )
-    if quantity <= 0:
-        raise serializers.ValidationError({"quantity": "Quantity must be greater than 0"})
+
+    qty = _coerce_transfer_quantity(quantity)
+    when = _coerce_transfer_occurred_at(occurred_at)
 
     apply_delta(
         product_id=product.id,
         warehouse_id=from_warehouse.id,
-        delta=-int(quantity),
+        delta=-qty,
         movement_type=StockMovement.MovementType.TRANSFER_OUT,
         user=user,
-        occurred_at=occurred_at,
+        occurred_at=when,
         transfer_id=transfer_id,
         notes=f"Transfer out to warehouse {to_warehouse.id}",
     )
     apply_delta(
         product_id=product.id,
         warehouse_id=to_warehouse.id,
-        delta=int(quantity),
+        delta=qty,
         movement_type=StockMovement.MovementType.TRANSFER_IN,
         user=user,
-        occurred_at=occurred_at,
+        occurred_at=when,
         transfer_id=transfer_id,
         notes=f"Transfer in from warehouse {from_warehouse.id}",
     )
@@ -1301,7 +1339,10 @@ class TransferBulkCreateView(APIView):
 
                             from_warehouse_id = transfer_data.get('from_warehouse_id')
                             to_warehouse_id = transfer_data.get('to_warehouse_id')
-                            quantity = transfer_data.get('quantity', 0)
+                            quantity = _coerce_transfer_quantity(transfer_data.get('quantity', 0))
+                            occurred_at = _coerce_transfer_occurred_at(
+                                transfer_data.get('transfer_date')
+                            )
 
                             if not product_id:
                                 raise serializers.ValidationError({"product_id": "Product ID is required"})
@@ -1341,7 +1382,7 @@ class TransferBulkCreateView(APIView):
                                 to_warehouse=to_warehouse,
                                 quantity=quantity,
                                 shipping_cost=transfer_data.get('shipping_cost', 0),
-                                transfer_date=transfer_data.get('transfer_date') or timezone.now(),
+                                transfer_date=occurred_at,
                                 created_by=request.user,
                                 updated_by=request.user,
                             )
@@ -1353,7 +1394,7 @@ class TransferBulkCreateView(APIView):
                                 quantity=quantity,
                                 user=request.user,
                                 transfer_id=transfer.id,
-                                occurred_at=transfer.transfer_date,
+                                occurred_at=occurred_at,
                             )
 
                             succeeded.append({

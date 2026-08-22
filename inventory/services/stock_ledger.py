@@ -7,12 +7,13 @@ can compute opening/closing stock and typed movements.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
+from datetime import date, datetime
+from typing import Optional, Union
 
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import serializers
 
 from inventory.models import Inventory, StockMovement
@@ -25,12 +26,28 @@ class StockLedgerError(serializers.ValidationError):
     """Raised when a stock change cannot be applied."""
 
 
-def _aware(dt: Optional[datetime] = None) -> datetime:
+def _aware(dt: Optional[Union[datetime, date, str]] = None) -> datetime:
     if dt is None:
         return timezone.now()
-    if timezone.is_naive(dt):
-        return timezone.make_aware(dt)
-    return dt
+    if isinstance(dt, datetime):
+        if timezone.is_naive(dt):
+            return timezone.make_aware(dt)
+        return dt
+    if isinstance(dt, date):
+        return timezone.make_aware(datetime.combine(dt, datetime.min.time()))
+    if isinstance(dt, str):
+        text = dt.strip()
+        if not text:
+            return timezone.now()
+        parsed = parse_datetime(text)
+        if parsed is not None:
+            if timezone.is_naive(parsed):
+                return timezone.make_aware(parsed)
+            return parsed
+        day = parse_date(text)
+        if day is not None:
+            return timezone.make_aware(datetime.combine(day, datetime.min.time()))
+    raise StockLedgerError({"occurred_at": f"Invalid datetime value: {dt!r}"})
 
 
 @transaction.atomic

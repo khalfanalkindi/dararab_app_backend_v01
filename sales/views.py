@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.exceptions import NotFound
+from rest_framework import serializers
 from django.http import Http404
 from django.db import transaction
 from django.db.models import ProtectedError, Sum, Count, Avg, F, Q
@@ -1394,9 +1395,51 @@ class CalculateRoyaltiesView(APIView):
            * If sum < fixed_amount: return eligible=false
            * If sum >= fixed_amount: Z = sum - fixed_amount, RA = Z × (commission_percent/100)
     
-    Returns: {eligible: bool, RA: decimal or null}
+    Returns: {eligible: bool, RA: decimal or null, settlement: {...}}
     """
     permission_classes = [IsAuthenticated]
+
+    def _persist_calculation_response(
+        self,
+        request,
+        *,
+        contract,
+        project,
+        product,
+        eligible: bool,
+        ra,
+        reason: str = "",
+        details=None,
+        currency: str = "$",
+    ):
+        from sales.services.royalty_settlement import (
+            settlement_payload,
+            upsert_open_royalty_settlement,
+        )
+
+        amount_due = ra if eligible and ra is not None else Decimal("0.00")
+        row = upsert_open_royalty_settlement(
+            contract=contract,
+            project=project,
+            product=product,
+            user=request.user,
+            eligible=eligible,
+            amount_due=amount_due,
+            reason=reason or "",
+            details=details,
+        )
+        payload = {
+            "eligible": eligible,
+            "RA": float(ra) if ra is not None else None,
+            "currency": currency,
+            "reason": reason or None,
+            "details": details,
+            "settlement": settlement_payload(row),
+            "saved": True,
+        }
+        if not reason:
+            payload.pop("reason", None)
+        return Response(payload, status=status.HTTP_200_OK)
     
     def post(self, request):
         contract_id = request.data.get('contract_id')
@@ -1461,21 +1504,28 @@ class CalculateRoyaltiesView(APIView):
                         status=status.HTTP_404_NOT_FOUND
                     )
             
-            # Get ProductSalesStats for actual (paid books)
-            # If not found, automatically calculate it
-            try:
-                stats = ProductSalesStats.objects.get(product=product)
-                actual_paid = stats.actual
-            except ProductSalesStats.DoesNotExist:
-                # Auto-recalculate stats for this product if they don't exist
-                try:
-                    stats = ProductSalesStats.calculate_for_product(product)
-                    actual_paid = stats.actual
-                except Exception as e:
-                    return Response(
-                        {"error": f"Failed to calculate sales statistics for product ID {product.id}: {str(e)}"},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
+            # Period for this open cycle (after last settle, or project.created_at)
+            from sales.services.royalty_settlement import (
+                compute_period_actual_paid,
+                compute_period_paid_amount,
+                get_open_settlement,
+                has_prior_settlement,
+                resolve_period_start,
+            )
+
+            open_row = get_open_settlement(contract_id=contract.id)
+            period_start = (
+                open_row.period_start
+                if open_row and open_row.period_start
+                else resolve_period_start(contract=contract, project=project)
+            )
+            prior_settled = has_prior_settlement(contract_id=contract.id)
+
+            # Paid copies in this cycle only (does not mutate ProductSalesStats / POS)
+            actual_paid = compute_period_actual_paid(
+                product_id=product.id,
+                period_start=period_start,
+            )
             
             # Get PrintRun for this product to get the price
             # A product can have multiple PrintRuns (different editions), so get the latest one
@@ -1518,37 +1568,74 @@ class CalculateRoyaltiesView(APIView):
             
             # Handle retail_price (id=53) separately - different calculation path
             if royalties_type_id == 53:  # retail_price
-                # Get sum of invoice_paid_amount from Payment table
-                # Get all invoices that have InvoiceItems for this product
-                invoices_with_product = Invoice.objects.filter(
-                    invoiceitem__product=product
-                ).distinct()
-                
-                # Get the latest payment for each invoice and sum their invoice_paid_amount
-                # This gives us the total paid amount for each invoice (not double counting)
-                sum_paid_amount = Decimal('0')
-                for invoice in invoices_with_product:
-                    latest_payment = Payment.objects.filter(
-                        invoice=invoice
-                    ).order_by('-created_at', '-id').first()
-                    if latest_payment and latest_payment.invoice_paid_amount:
-                        sum_paid_amount += Decimal(str(latest_payment.invoice_paid_amount))
-                
-                # Compare with advance payment (fixed_amount)
+                sum_paid_amount = compute_period_paid_amount(
+                    product_id=product.id,
+                    period_start=period_start,
+                )
                 fixed_amount_value = Decimal(str(contract.fixed_amount))
-                
+                commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
+
+                # After a prior settle: advance already covered — royalties on period paid only
+                if prior_settled:
+                    if sum_paid_amount <= 0:
+                        return self._persist_calculation_response(
+                            request,
+                            contract=contract,
+                            project=project,
+                            product=product,
+                            eligible=False,
+                            ra=None,
+                            reason=(
+                                f"No paid amount in current cycle since {period_start.isoformat()}"
+                            ),
+                            details={
+                                "sum_paid_amount": float(sum_paid_amount),
+                                "fixed_amount": float(fixed_amount_value),
+                                "period_start": period_start.isoformat(),
+                                "prior_settled": True,
+                                "royalties_type_id": royalties_type_id,
+                                "royalties_type": contract.royalties_type.value,
+                            },
+                        )
+                    RA = sum_paid_amount * commission_as_decimal
+                    return self._persist_calculation_response(
+                        request,
+                        contract=contract,
+                        project=project,
+                        product=product,
+                        eligible=True,
+                        ra=RA.quantize(Decimal('0.01')),
+                        details={
+                            "sum_paid_amount": float(sum_paid_amount),
+                            "fixed_amount": float(fixed_amount_value),
+                            "Z": float(sum_paid_amount),
+                            "period_start": period_start.isoformat(),
+                            "prior_settled": True,
+                            "commission_percent": float(contract.commission_percent),
+                            "royalties_type_id": royalties_type_id,
+                            "royalties_type": contract.royalties_type.value,
+                        },
+                    )
+
                 if sum_paid_amount < fixed_amount_value:
-                    return Response({
-                        "eligible": False,
-                        "RA": None,
-                        "reason": f"Sum of paid amount ({float(sum_paid_amount)}) is less than advance payment ({float(fixed_amount_value)})",
-                        "details": {
+                    return self._persist_calculation_response(
+                        request,
+                        contract=contract,
+                        project=project,
+                        product=product,
+                        eligible=False,
+                        ra=None,
+                        reason=(
+                            f"Sum of paid amount ({float(sum_paid_amount)}) is less than "
+                            f"advance payment ({float(fixed_amount_value)})"
+                        ),
+                        details={
                             "sum_paid_amount": float(sum_paid_amount),
                             "fixed_amount": float(fixed_amount_value),
                             "royalties_type_id": royalties_type_id,
                             "royalties_type": contract.royalties_type.value
-                        }
-                    }, status=status.HTTP_200_OK)
+                        },
+                    )
                 
                 # Calculate Z = sum - advance payment
                 Z = sum_paid_amount - fixed_amount_value
@@ -1559,19 +1646,22 @@ class CalculateRoyaltiesView(APIView):
                 commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
                 RA = Z * commission_as_decimal
                 
-                return Response({
-                    "eligible": True,
-                    "RA": float(RA.quantize(Decimal('0.01'))),
-                    "currency": "$",
-                    "details": {
+                return self._persist_calculation_response(
+                    request,
+                    contract=contract,
+                    project=project,
+                    product=product,
+                    eligible=True,
+                    ra=RA.quantize(Decimal('0.01')),
+                    details={
                         "sum_paid_amount": float(sum_paid_amount),
                         "fixed_amount": float(fixed_amount_value),
                         "Z": Z_int,
                         "commission_percent": float(contract.commission_percent),
                         "royalties_type_id": royalties_type_id,
                         "royalties_type": contract.royalties_type.value
-                    }
-                }, status=status.HTTP_200_OK)
+                    },
+                )
             
             # For list_price (id=52), continue with the existing X, Y calculation
             # Step 1: Calculate X = fixed_amount / (commission_percent / price)
@@ -1581,49 +1671,63 @@ class CalculateRoyaltiesView(APIView):
             price_value = Decimal(str(print_run.price))
             fixed_amount_value = Decimal(str(contract.fixed_amount))
             
-            # X = fixed_amount / (commission_percent / price)
-            # X = fixed_amount × (price / commission_percent)
-            # Note: commission_percent is used as-is (e.g., 5.00), not divided by 100 here
-            X = fixed_amount_value * (price_value / commission_percent_value)
-            # Convert X to int if it's a whole number (it represents count of books)
-            # Remove decimal places for display if it's a whole number
-            X_float = float(X)
-            X_int = int(X_float) if X_float.is_integer() else X_float
+            # After prior settle: advance + contractual free copies already handled in earlier cycles
+            if prior_settled:
+                X = Decimal("0")
+                X_int = 0
+            else:
+                # X = fixed_amount / (commission_percent / price)
+                # X = fixed_amount × (price / commission_percent)
+                # Note: commission_percent is used as-is (e.g., 5.00), not divided by 100 here
+                X = fixed_amount_value * (price_value / commission_percent_value)
+                # Convert X to int if it's a whole number (it represents count of books)
+                # Remove decimal places for display if it's a whole number
+                X_float = float(X)
+                X_int = int(X_float) if X_float.is_integer() else X_float
             
             # Step 2: Compare X with actual (paid books)
             if X > actual_paid:
-                return Response({
-                    "eligible": False,
-                    "RA": None,
-                    "reason": f"X ({X_int}) is greater than actual paid books ({actual_paid})",
-                    "details": {
+                return self._persist_calculation_response(
+                    request,
+                    contract=contract,
+                    project=project,
+                    product=product,
+                    eligible=False,
+                    ra=None,
+                    reason=f"X ({X_int}) is greater than actual paid books ({actual_paid})",
+                    details={
                         "X": X_int,
                         "actual_paid": actual_paid,
+                        "period_start": period_start.isoformat(),
+                        "prior_settled": prior_settled,
                         "fixed_amount": float(contract.fixed_amount),
                         "commission_percent": float(contract.commission_percent),
                         "price": float(print_run.price),
                         "print_run_id": print_run.id,
                         "edition_number": print_run.edition_number
-                    }
-                }, status=status.HTTP_200_OK)
+                    },
+                )
             
             # Step 3: Calculate Y = actual - X - free_copies - fully_discounted - stock write-offs
-            # Sum free_copies from ALL contracts for this project/product
-            # A product can have multiple contracts, and we need to account for all free copies
-            all_contracts = Contract.objects.filter(project=project)
-            free_copies = sum(
-                (c.free_copies or 0 for c in all_contracts),
-                0
-            )
+            # Sum free_copies from ALL contracts for this project/product (first cycle only)
+            if prior_settled:
+                free_copies = 0
+            else:
+                all_contracts = Contract.objects.filter(project=project)
+                free_copies = sum(
+                    (c.free_copies or 0 for c in all_contracts),
+                    0
+                )
             # Exclude books sold at 100% discount with zero payment (included in actual when total_price=0)
             fully_discounted_copies = InvoiceItem.objects.filter(
                 product=product,
                 paid_amount=0,
+                created_at__gte=period_start,
             ).filter(
                 Q(discount_percent__gte=100) | Q(total_price=0)
             ).aggregate(total=Sum('quantity'))['total'] or 0
 
-            # Stock ledger exits: damage / loss / complimentary
+            # Stock ledger exits: damage / loss / complimentary (current cycle only)
             # Skip rows linked to invoice_item to avoid double-counting 100% discount sales
             # already covered by fully_discounted_copies (and sale backfill complimentary rows).
             from inventory.models import StockMovement
@@ -1636,6 +1740,7 @@ class CalculateRoyaltiesView(APIView):
                 product_id=product.id,
                 movement_type__in=stock_writeoff_types,
                 invoice_item_id__isnull=True,
+                occurred_at__gte=period_start,
             )
             damaged_copies = abs(
                 int(
@@ -1676,15 +1781,19 @@ class CalculateRoyaltiesView(APIView):
             
             # If Y is negative or zero, no royalties
             if Y <= 0:
-                return Response({
-                    "eligible": False,
-                    "RA": None,
-                    "reason": (
+                return self._persist_calculation_response(
+                    request,
+                    contract=contract,
+                    project=project,
+                    product=product,
+                    eligible=False,
+                    ra=None,
+                    reason=(
                         f"Y ({Y_int}) is less than or equal to 0 after subtracting X, "
                         f"free copies, 100% discount copies, and stock write-offs "
                         f"(damage/loss/complimentary)"
                     ),
-                    "details": {
+                    details={
                         "X": X_int,
                         "actual_paid": actual_paid,
                         "free_copies": free_copies,
@@ -1694,8 +1803,8 @@ class CalculateRoyaltiesView(APIView):
                         "complimentary_stock_copies": complimentary_stock_copies,
                         "stock_excluded_copies": stock_excluded_copies,
                         "Y": Y_int
-                    }
-                }, status=status.HTTP_200_OK)
+                    },
+                )
             
             # Step 4: Calculate RA for list_price (id=52)
             # commission_percent is stored as percentage whole number (e.g., 5.00 for 5%)
@@ -1740,12 +1849,16 @@ class CalculateRoyaltiesView(APIView):
                         # Last PrintRun - use current date
                         end_date = timezone.now()
                     
-                    # Count InvoiceItems for this product created in this date range
-                    transaction_count = InvoiceItem.objects.filter(
-                        product=product,
-                        created_at__gte=start_date,
-                        created_at__lt=end_date
-                    ).count()
+                    # Count InvoiceItems for this product created in this date range (and in cycle)
+                    range_start = start_date if start_date >= period_start else period_start
+                    if range_start >= end_date:
+                        transaction_count = 0
+                    else:
+                        transaction_count = InvoiceItem.objects.filter(
+                            product=product,
+                            created_at__gte=range_start,
+                            created_at__lt=end_date
+                        ).count()
                     
                     # Add: printrun.price × transaction_count
                     sum_price_transactions += Decimal(str(print_run.price)) * Decimal(str(transaction_count))
@@ -1758,11 +1871,14 @@ class CalculateRoyaltiesView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            return Response({
-                "eligible": True,
-                "RA": float(RA.quantize(Decimal('0.01'))),
-                "currency": "$",
-                "details": {
+            return self._persist_calculation_response(
+                request,
+                contract=contract,
+                project=project,
+                product=product,
+                eligible=True,
+                ra=RA.quantize(Decimal('0.01')),
+                details={
                     "X": X_int,
                     "Y": Y_int,
                     "actual_paid": actual_paid,
@@ -1772,12 +1888,14 @@ class CalculateRoyaltiesView(APIView):
                     "lost_copies": lost_copies,
                     "complimentary_stock_copies": complimentary_stock_copies,
                     "stock_excluded_copies": stock_excluded_copies,
+                    "period_start": period_start.isoformat(),
+                    "prior_settled": prior_settled,
                     "royalties_type_id": royalties_type_id,
                     "royalties_type": contract.royalties_type.value if contract.royalties_type else None,
                     "commission_percent": float(contract.commission_percent),
                     "sum_price_transactions": float(sum_price_transactions) if royalties_type_id == 52 else None
-                }
-            }, status=status.HTTP_200_OK)
+                },
+            )
             
         except Contract.DoesNotExist:
             return Response(
@@ -1794,3 +1912,211 @@ class CalculateRoyaltiesView(APIView):
                 {"error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+class SettleRoyaltySettlementView(APIView):
+    """
+    Settle an open royalty settlement and open the next cycle.
+
+    POST /api/sales/royalty-settlements/<id>/settle/
+    Body (optional): { "amount_paid": 123.45 }
+
+    Does not mutate invoices / POS — only RoyaltySettlement rows.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from sales.services.royalty_settlement import (
+            settle_open_royalty_settlement,
+            settlement_payload,
+        )
+
+        amount_paid = request.data.get("amount_paid")
+        try:
+            result = settle_open_royalty_settlement(
+                settlement_id=pk,
+                user=request.user,
+                amount_paid=amount_paid,
+            )
+        except serializers.ValidationError as e:
+            detail = e.detail if hasattr(e, "detail") else str(e)
+            return Response({"error": detail}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        settled = result["settled"]
+        return Response(
+            {
+                "settled": settlement_payload(settled),
+                "next_open": settlement_payload(result["next_open"]),
+                "message": "Royalty settlement completed. New open cycle created.",
+                "reports": {
+                    "pdf": f"/api/sales/royalty-settlements/{settled.id}/report/?format=pdf",
+                    "xlsx": f"/api/sales/royalty-settlements/{settled.id}/report/?format=xlsx",
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class OpenRoyaltySettlementView(APIView):
+    """
+    GET /api/sales/royalty-settlements/open/?contract_id=123
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from sales.services.royalty_settlement import (
+            get_open_settlement,
+            settlement_payload,
+        )
+
+        contract_id = request.query_params.get("contract_id")
+        if not contract_id:
+            return Response(
+                {"error": "contract_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            contract_id_int = int(contract_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "contract_id must be an integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        row = get_open_settlement(contract_id=contract_id_int)
+        if not row:
+            return Response({"settlement": None}, status=status.HTTP_200_OK)
+        return Response({"settlement": settlement_payload(row)}, status=status.HTTP_200_OK)
+
+
+class RoyaltySettlementListView(APIView):
+    """
+    List royalty settlements for a contract (history).
+
+    GET /api/sales/royalty-settlements/?contract_id=123&status=settled
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from sales.models import RoyaltySettlement
+        from sales.services.royalty_settlement import (
+            list_settlements_for_contract,
+            settlement_payload,
+        )
+
+        contract_id = request.query_params.get("contract_id")
+        if not contract_id:
+            return Response(
+                {"error": "contract_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            contract_id_int = int(contract_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "contract_id must be an integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        status_filter = (request.query_params.get("status") or "").strip().lower() or None
+        valid_statuses = {c.value for c in RoyaltySettlement.Status}
+        if status_filter and status_filter not in valid_statuses:
+            return Response(
+                {"error": f"status must be one of: {', '.join(sorted(valid_statuses))}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        rows = list_settlements_for_contract(
+            contract_id=contract_id_int,
+            status=status_filter,
+        )
+        return Response(
+            {
+                "count": len(rows),
+                "results": [
+                    settlement_payload(row, include_titles=True) for row in rows
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RoyaltySettlementReportView(APIView):
+    """
+    Download a simple royalty settlement report.
+
+    GET /api/sales/royalty-settlements/<id>/report/?format=pdf|xlsx
+
+    PDF: bilingual summary + logo + signature blocks (preamble placeholder).
+    Excel: accounting one-row summary (no calculation dump).
+    Available for settled rows (and cancelled for audit if needed later).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        from django.http import HttpResponse
+
+        from sales.models import RoyaltySettlement
+        from sales.services.royalty_settlement_report import (
+            build_excel_bytes,
+            build_pdf_bytes,
+            report_filename,
+        )
+
+        fmt = (request.query_params.get("format") or "pdf").lower().strip()
+        if fmt not in ("pdf", "xlsx", "excel"):
+            return Response(
+                {"error": "format must be pdf or xlsx"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if fmt == "excel":
+            fmt = "xlsx"
+
+        try:
+            row = (
+                RoyaltySettlement.objects.select_related(
+                    "contract",
+                    "project",
+                    "product",
+                    "settled_by",
+                    "calculated_by",
+                ).get(pk=pk)
+            )
+        except RoyaltySettlement.DoesNotExist:
+            return Response(
+                {"error": "Settlement not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if row.status != RoyaltySettlement.Status.SETTLED:
+            return Response(
+                {"error": "Report is available only for settled settlements"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            if fmt == "pdf":
+                payload = build_pdf_bytes(row)
+                content_type = "application/pdf"
+            else:
+                payload = build_excel_bytes(row)
+                content_type = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to build report: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        filename = report_filename(row, fmt)
+        response = HttpResponse(payload, content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response["Content-Length"] = str(len(payload))
+        return response

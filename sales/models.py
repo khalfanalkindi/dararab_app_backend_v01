@@ -500,3 +500,113 @@ class ProductSalesStats(AuditModel):
             updated_count += 1
         
         return updated_count
+
+
+# 📒 Royalty accrual / settlement (one open row per contract at a time)
+class RoyaltySettlement(AuditModel):
+    """
+    Stores royalty accrual cycles per contract.
+
+    - Calculate (manual): create/update the single open row for the contract.
+    - Settle: mark current row settled, then create a new open row for the next cycle.
+    - Cancelled: discarded open/draft cycle (does not count as settled).
+
+    Does not mutate invoices, payments, or POS paths — period filtering uses dates only.
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        SETTLED = "settled", "Settled"
+        CANCELLED = "cancelled", "Cancelled"
+
+    contract = models.ForeignKey(
+        "inventory.Contract",
+        on_delete=models.CASCADE,
+        related_name="royalty_settlements",
+    )
+    project = models.ForeignKey(
+        "inventory.Project",
+        on_delete=models.CASCADE,
+        related_name="royalty_settlements",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="royalty_settlements",
+    )
+
+    period_start = models.DateTimeField(
+        help_text="Cycle start: project.created_at or previous settlement timestamp"
+    )
+    period_end = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last calculate time while open; set to settle time when settled",
+    )
+
+    amount_due = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    amount_paid = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    currency = models.CharField(max_length=3, default="USD")
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.OPEN,
+        db_index=True,
+    )
+    eligible = models.BooleanField(default=False)
+    reason = models.TextField(blank=True, default="")
+    calculation_details = models.JSONField(null=True, blank=True)
+
+    calculated_at = models.DateTimeField(null=True, blank=True)
+    calculated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="royalty_settlements_calculated",
+    )
+    settled_at = models.DateTimeField(null=True, blank=True)
+    settled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="royalty_settlements_settled",
+    )
+
+    # MySQL-compatible "one open row per contract": unique when set, NULL when not open
+    open_contract_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        unique=True,
+        help_text="Set to contract_id while status=open; NULL when settled/cancelled",
+    )
+
+    class Meta:
+        verbose_name = "Royalty Settlement"
+        verbose_name_plural = "Royalty Settlements"
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["contract", "status"]),
+            models.Index(fields=["project", "status"]),
+            models.Index(fields=["product", "status"]),
+            models.Index(fields=["status", "calculated_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.status == self.Status.OPEN:
+            self.open_contract_id = self.contract_id
+        else:
+            self.open_contract_id = None
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return (
+            f"RoyaltySettlement #{self.id} contract={self.contract_id} "
+            f"status={self.status} due={self.amount_due} {self.currency}"
+        )

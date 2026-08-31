@@ -64,7 +64,27 @@ urlpatterns = [
         name="book-analytics",
     ),
     
-    # Royalties Calculation
+    # Royalties Calculation / Settlement
     path("calculate-royalties/", views.CalculateRoyaltiesView.as_view(), name="calculate-royalties"),
+    path(
+        "royalty-settlements/open/",
+        views.OpenRoyaltySettlementView.as_view(),
+        name="royalty-settlement-open",
+    ),
+    path(
+        "royalty-settlements/",
+        views.RoyaltySettlementListView.as_view(),
+        name="royalty-settlement-list",
+    ),
+    path(
+        "royalty-settlements/<int:pk>/settle/",
+        views.SettleRoyaltySettlementView.as_view(),
+        name="royalty-settlement-settle",
+    ),
+    path(
+        "royalty-settlements/<int:pk>/report/",
+        views.RoyaltySettlementReportView.as_view(),
+        name="royalty-settlement-report",
+    ),
 
 ]

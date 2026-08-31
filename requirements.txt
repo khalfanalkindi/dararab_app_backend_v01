@@ -15,3 +15,7 @@ whitenoise==6.6.0
 django-filter==23.5
 django-csp==4.0
 python-dotenv==1.0.1
+reportlab==5.0.1
+openpyxl==3.1.5
+arabic-reshaper==3.0.0
+python-bidi==0.6.6

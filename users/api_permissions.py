@@ -52,7 +52,8 @@ _API_PAGE_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("/api/sales/warehouse-dashboard", ("/reports/warehouse-stat", "/dashboard")),
     ("/api/sales/product-sales-stats", ("/reports/warehouse-stat", "/dashboard")),
     ("/api/sales/products", ("/reports/book-sales", "/reports/warehouse-stat", "/dashboard")),
-    ("/api/sales/calculate-royalties", ("/reports/royalties",)),
+    ("/api/sales/calculate-royalties", ("/royalties", "/royalties/history", "/reports/royalties", "/reports/royalties/history")),
+    ("/api/sales/royalty-settlements", ("/royalties", "/royalties/history", "/reports/royalties", "/reports/royalties/history")),
     # Inventory / catalog
     ("/api/inventory/pos-product-summary", ("/pos",)),
     ("/api/inventory/product-summary", ("/products", "/inventory", "/transfer", "/pos")),

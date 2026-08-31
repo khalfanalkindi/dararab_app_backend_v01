@@ -3,7 +3,7 @@ from django.utils.html import format_html
 from django.db.models import Sum, F
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from .models import Customer, Invoice, InvoiceItem, Payment, Return, ProductSalesStats
+from .models import Customer, Invoice, InvoiceItem, Payment, Return, ProductSalesStats, RoyaltySettlement
 
 
 @admin.register(Customer)
@@ -345,6 +345,41 @@ class ProductSalesStatsAdmin(admin.ModelAdmin):
     
     def save_model(self, request, obj, form, change):
         if not change:  # New object
+            obj.created_by = request.user
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(RoyaltySettlement)
+class RoyaltySettlementAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "contract",
+        "project",
+        "product",
+        "status",
+        "eligible",
+        "amount_due",
+        "currency",
+        "period_start",
+        "period_end",
+        "calculated_at",
+        "settled_at",
+    )
+    list_filter = ("status", "eligible", "currency", "calculated_at", "settled_at")
+    search_fields = (
+        "contract__title",
+        "project__title_ar",
+        "project__title_original",
+        "product__title_ar",
+        "product__title_en",
+        "product__isbn",
+    )
+    readonly_fields = ("created_by", "updated_by", "created_at", "updated_at")
+    raw_id_fields = ("contract", "project", "product", "calculated_by", "settled_by")
+
+    def save_model(self, request, obj, form, change):
+        if not change:
             obj.created_by = request.user
         obj.updated_by = request.user
         super().save_model(request, obj, form, change)

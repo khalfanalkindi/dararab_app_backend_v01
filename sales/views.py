@@ -1388,12 +1388,15 @@ class CalculateRoyaltiesView(APIView):
        - Y = actual - X - free_copies - fully_discounted_copies
          - stock_excluded_copies (damage / loss / complimentary from StockMovement)
        - Check royalties_type:
-         - list_price (id=52): RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
-         - retail_price (id=53): 
-           * Get sum(actual paid amount) from InvoiceItems
-           * Compare with advance payment (fixed_amount)
-           * If sum < fixed_amount: return eligible=false
-           * If sum >= fixed_amount: Z = sum - fixed_amount, RA = Z × (commission_percent/100)
+         - list_price (id=52): RA = Y × book_price × (commission_percent/100)
+           * eligibility (X / Y / free / discount / stock) unchanged
+           * V1 backup kept in compute_list_price_ra_v1_price_transactions
+         - retail_price (id=53):
+           * paid_net_revenue from book-sales analytics (payment_status=paid)
+           * royalty_earned = paid_net_revenue × (commission_percent/100)
+           * unrecovered_advance = 0 if prior settled else fixed_amount
+           * RA = max(0, royalty_earned − unrecovered_advance)
+           * V1 backup kept in compute_retail_royalties_v1_invoice_paid
     
     Returns: {eligible: bool, RA: decimal or null, settlement: {...}}
     """
@@ -1507,7 +1510,7 @@ class CalculateRoyaltiesView(APIView):
             # Period for this open cycle (after last settle, or project.created_at)
             from sales.services.royalty_settlement import (
                 compute_period_actual_paid,
-                compute_period_paid_amount,
+                compute_retail_royalties_from_paid_net_revenue,
                 get_open_settlement,
                 has_prior_settlement,
                 resolve_period_start,
@@ -1566,101 +1569,30 @@ class CalculateRoyaltiesView(APIView):
             
             royalties_type_id = contract.royalties_type.id
             
-            # Handle retail_price (id=53) separately - different calculation path
+            # Handle retail_price (id=53) — paid net revenue × %, then recover advance from royalty
+            # V1 (invoice paid_amount − advance) × % kept as compute_retail_royalties_v1_invoice_paid
             if royalties_type_id == 53:  # retail_price
-                sum_paid_amount = compute_period_paid_amount(
+                retail = compute_retail_royalties_from_paid_net_revenue(
                     product_id=product.id,
                     period_start=period_start,
+                    fixed_amount=Decimal(str(contract.fixed_amount)),
+                    commission_percent=Decimal(str(contract.commission_percent)),
+                    prior_settled=prior_settled,
                 )
-                fixed_amount_value = Decimal(str(contract.fixed_amount))
-                commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
-
-                # After a prior settle: advance already covered — royalties on period paid only
-                if prior_settled:
-                    if sum_paid_amount <= 0:
-                        return self._persist_calculation_response(
-                            request,
-                            contract=contract,
-                            project=project,
-                            product=product,
-                            eligible=False,
-                            ra=None,
-                            reason=(
-                                f"No paid amount in current cycle since {period_start.isoformat()}"
-                            ),
-                            details={
-                                "sum_paid_amount": float(sum_paid_amount),
-                                "fixed_amount": float(fixed_amount_value),
-                                "period_start": period_start.isoformat(),
-                                "prior_settled": True,
-                                "royalties_type_id": royalties_type_id,
-                                "royalties_type": contract.royalties_type.value,
-                            },
-                        )
-                    RA = sum_paid_amount * commission_as_decimal
-                    return self._persist_calculation_response(
-                        request,
-                        contract=contract,
-                        project=project,
-                        product=product,
-                        eligible=True,
-                        ra=RA.quantize(Decimal('0.01')),
-                        details={
-                            "sum_paid_amount": float(sum_paid_amount),
-                            "fixed_amount": float(fixed_amount_value),
-                            "Z": float(sum_paid_amount),
-                            "period_start": period_start.isoformat(),
-                            "prior_settled": True,
-                            "commission_percent": float(contract.commission_percent),
-                            "royalties_type_id": royalties_type_id,
-                            "royalties_type": contract.royalties_type.value,
-                        },
-                    )
-
-                if sum_paid_amount < fixed_amount_value:
-                    return self._persist_calculation_response(
-                        request,
-                        contract=contract,
-                        project=project,
-                        product=product,
-                        eligible=False,
-                        ra=None,
-                        reason=(
-                            f"Sum of paid amount ({float(sum_paid_amount)}) is less than "
-                            f"advance payment ({float(fixed_amount_value)})"
-                        ),
-                        details={
-                            "sum_paid_amount": float(sum_paid_amount),
-                            "fixed_amount": float(fixed_amount_value),
-                            "royalties_type_id": royalties_type_id,
-                            "royalties_type": contract.royalties_type.value
-                        },
-                    )
-                
-                # Calculate Z = sum - advance payment
-                Z = sum_paid_amount - fixed_amount_value
-                Z_float = float(Z)
-                Z_int = int(Z_float) if Z_float.is_integer() else Z_float
-                
-                # Calculate RA = Z × (commission_percent/100)
-                commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
-                RA = Z * commission_as_decimal
-                
+                details = {
+                    **(retail.get("details") or {}),
+                    "royalties_type_id": royalties_type_id,
+                    "royalties_type": contract.royalties_type.value,
+                }
                 return self._persist_calculation_response(
                     request,
                     contract=contract,
                     project=project,
                     product=product,
-                    eligible=True,
-                    ra=RA.quantize(Decimal('0.01')),
-                    details={
-                        "sum_paid_amount": float(sum_paid_amount),
-                        "fixed_amount": float(fixed_amount_value),
-                        "Z": Z_int,
-                        "commission_percent": float(contract.commission_percent),
-                        "royalties_type_id": royalties_type_id,
-                        "royalties_type": contract.royalties_type.value
-                    },
+                    eligible=bool(retail["eligible"]),
+                    ra=retail["RA"],
+                    reason=retail.get("reason") or "",
+                    details=details,
                 )
             
             # For list_price (id=52), continue with the existing X, Y calculation
@@ -1807,77 +1739,33 @@ class CalculateRoyaltiesView(APIView):
                 )
             
             # Step 4: Calculate RA for list_price (id=52)
-            # commission_percent is stored as percentage whole number (e.g., 5.00 for 5%)
-            # So we divide by 100 to get decimal form (0.05)
-            commission_as_decimal = Decimal(str(contract.commission_percent)) / Decimal('100')
-            
-            # Initialize variables for response
-            sum_price_transactions = None
-            
-            if royalties_type_id == 52:  # list_price
-                # RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
-                # Get all PrintRuns for this product
-                print_runs = PrintRun.objects.filter(product=product).order_by('published_at', 'edition_number')
-                
-                if not print_runs.exists():
-                    return Response(
-                        {"error": "No PrintRuns found for this product. PrintRuns are required for list_price calculation."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Calculate sum of (printrun.price × number_of_transactions) for each PrintRun
-                # For each PrintRun, count InvoiceItems created on or after its published_at date
-                # and before the next PrintRun's published_at (or current date if it's the latest)
-                from django.utils import timezone
-                from datetime import datetime, timedelta
-                
-                sum_price_transactions = Decimal('0')
-                
-                for i, print_run in enumerate(print_runs):
-                    # Get the start date (this PrintRun's published_at)
-                    start_date = timezone.make_aware(
-                        datetime.combine(print_run.published_at, datetime.min.time())
-                    )
-                    
-                    # Get the end date (next PrintRun's published_at, or current date if last)
-                    if i + 1 < len(print_runs):
-                        next_print_run = print_runs[i + 1]
-                        end_date = timezone.make_aware(
-                            datetime.combine(next_print_run.published_at, datetime.min.time())
-                        )
-                    else:
-                        # Last PrintRun - use current date
-                        end_date = timezone.now()
-                    
-                    # Count InvoiceItems for this product created in this date range (and in cycle)
-                    range_start = start_date if start_date >= period_start else period_start
-                    if range_start >= end_date:
-                        transaction_count = 0
-                    else:
-                        transaction_count = InvoiceItem.objects.filter(
-                            product=product,
-                            created_at__gte=range_start,
-                            created_at__lt=end_date
-                        ).count()
-                    
-                    # Add: printrun.price × transaction_count
-                    sum_price_transactions += Decimal(str(print_run.price)) * Decimal(str(transaction_count))
-                
-                # RA = Y × sum(printrun.price × number_of_transactions) × (commission_percent/100)
-                RA = Y * sum_price_transactions * commission_as_decimal
-            else:
+            # Eligibility (X, Y, free/discount/stock) unchanged above.
+            # V2: RA = Y × book_price × (commission_percent/100)
+            # V1 backup: compute_list_price_ra_v1_price_transactions
+            if royalties_type_id != 52:
                 return Response(
                     {"error": f"Invalid royalties_type ID {royalties_type_id}. Expected 52 (list_price) or 53 (retail_price)"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
+            from sales.services.royalty_settlement import (
+                compute_list_price_ra_from_paid_copies,
+            )
+
+            list_ra = compute_list_price_ra_from_paid_copies(
+                Y=Decimal(str(Y)),
+                book_price=Decimal(str(print_run.price)),
+                commission_percent=Decimal(str(contract.commission_percent)),
+            )
+            RA = list_ra["RA"]
+
             return self._persist_calculation_response(
                 request,
                 contract=contract,
                 project=project,
                 product=product,
                 eligible=True,
-                ra=RA.quantize(Decimal('0.01')),
+                ra=RA,
                 details={
                     "X": X_int,
                     "Y": Y_int,
@@ -1893,7 +1781,9 @@ class CalculateRoyaltiesView(APIView):
                     "royalties_type_id": royalties_type_id,
                     "royalties_type": contract.royalties_type.value if contract.royalties_type else None,
                     "commission_percent": float(contract.commission_percent),
-                    "sum_price_transactions": float(sum_price_transactions) if royalties_type_id == 52 else None
+                    "book_price": float(print_run.price),
+                    "print_run_id": print_run.id,
+                    **(list_ra.get("details") or {}),
                 },
             )
             

@@ -151,6 +151,281 @@ def compute_period_paid_amount(*, product_id: int, period_start: datetime) -> De
     return total.quantize(Decimal("0.01"))
 
 
+def compute_retail_royalties_v1_invoice_paid(
+    *,
+    product_id: int,
+    period_start: datetime,
+    fixed_amount: Decimal,
+    commission_percent: Decimal,
+    prior_settled: bool,
+) -> dict[str, Any]:
+    """
+    V1 BACKUP — previous retail_price formula (do not use in production path).
+
+    Used invoice-level Payment.invoice_paid_amount, then:
+    - prior settled: RA = sum_paid × %
+    - first cycle: if sum_paid < advance → not eligible; else RA = (sum_paid − advance) × %
+    """
+    sum_paid_amount = compute_period_paid_amount(
+        product_id=product_id,
+        period_start=period_start,
+    )
+    commission_as_decimal = Decimal(str(commission_percent)) / Decimal("100")
+    fixed_amount_value = Decimal(str(fixed_amount))
+
+    if prior_settled:
+        if sum_paid_amount <= 0:
+            return {
+                "eligible": False,
+                "RA": None,
+                "reason": (
+                    f"No paid amount in current cycle since {period_start.isoformat()}"
+                ),
+                "details": {
+                    "version": "v1_invoice_paid_backup",
+                    "sum_paid_amount": float(sum_paid_amount),
+                    "fixed_amount": float(fixed_amount_value),
+                    "period_start": period_start.isoformat(),
+                    "prior_settled": True,
+                },
+            }
+        ra = (sum_paid_amount * commission_as_decimal).quantize(Decimal("0.01"))
+        return {
+            "eligible": True,
+            "RA": ra,
+            "reason": "",
+            "details": {
+                "version": "v1_invoice_paid_backup",
+                "sum_paid_amount": float(sum_paid_amount),
+                "fixed_amount": float(fixed_amount_value),
+                "Z": float(sum_paid_amount),
+                "period_start": period_start.isoformat(),
+                "prior_settled": True,
+                "commission_percent": float(commission_percent),
+            },
+        }
+
+    if sum_paid_amount < fixed_amount_value:
+        return {
+            "eligible": False,
+            "RA": None,
+            "reason": (
+                f"Sum of paid amount ({float(sum_paid_amount)}) is less than "
+                f"advance payment ({float(fixed_amount_value)})"
+            ),
+            "details": {
+                "version": "v1_invoice_paid_backup",
+                "sum_paid_amount": float(sum_paid_amount),
+                "fixed_amount": float(fixed_amount_value),
+            },
+        }
+
+    z = sum_paid_amount - fixed_amount_value
+    ra = (z * commission_as_decimal).quantize(Decimal("0.01"))
+    z_float = float(z)
+    z_out = int(z_float) if z_float.is_integer() else z_float
+    return {
+        "eligible": True,
+        "RA": ra,
+        "reason": "",
+        "details": {
+            "version": "v1_invoice_paid_backup",
+            "sum_paid_amount": float(sum_paid_amount),
+            "fixed_amount": float(fixed_amount_value),
+            "Z": z_out,
+            "commission_percent": float(commission_percent),
+        },
+    }
+
+
+def compute_retail_royalties_from_paid_net_revenue(
+    *,
+    product_id: int,
+    period_start: datetime,
+    fixed_amount: Decimal,
+    commission_percent: Decimal,
+    prior_settled: bool,
+) -> dict[str, Any]:
+    """
+    Current retail_price formula (matches book-sales paid net revenue).
+
+    1. paid_net_revenue = BookAnalytics summary.net_revenue with payment_status=paid
+       for invoices from period_start through today (same rules as /reports/book-sales).
+    2. royalty_earned = paid_net_revenue × (commission_percent / 100)
+    3. unrecovered_advance = 0 if prior_settled else fixed_amount
+    4. amount_due = max(0, royalty_earned − unrecovered_advance)
+    """
+    from sales.services.book_analytics import BookAnalyticsFilters, BookAnalyticsService
+
+    if timezone.is_aware(period_start):
+        start_date = timezone.localtime(period_start).date()
+    else:
+        start_date = period_start.date()
+    end_date = timezone.localdate()
+    if end_date < start_date:
+        end_date = start_date
+
+    payload = BookAnalyticsService(
+        product_id,
+        BookAnalyticsFilters(
+            start_date=start_date,
+            end_date=end_date,
+            payment_status="paid",
+            page=1,
+            page_size=1,
+        ),
+    ).build()
+
+    paid_net_revenue = Decimal(str(payload["summary"]["net_revenue"] or 0)).quantize(
+        Decimal("0.01")
+    )
+    commission_as_decimal = Decimal(str(commission_percent)) / Decimal("100")
+    royalty_earned = (paid_net_revenue * commission_as_decimal).quantize(Decimal("0.01"))
+    fixed_amount_value = Decimal(str(fixed_amount)).quantize(Decimal("0.01"))
+    unrecovered_advance = (
+        Decimal("0.00") if prior_settled else fixed_amount_value
+    )
+    amount_due = royalty_earned - unrecovered_advance
+    if amount_due < 0:
+        amount_due = Decimal("0.00")
+
+    details = {
+        "version": "v2_paid_net_revenue",
+        "paid_net_revenue": float(paid_net_revenue),
+        "royalty_earned": float(royalty_earned),
+        "unrecovered_advance": float(unrecovered_advance),
+        "amount_due": float(amount_due),
+        "fixed_amount": float(fixed_amount_value),
+        "commission_percent": float(commission_percent),
+        "period_start": period_start.isoformat(),
+        "period_start_date": start_date.isoformat(),
+        "period_end_date": end_date.isoformat(),
+        "prior_settled": prior_settled,
+        "formula": "amount_due = max(0, paid_net_revenue × % − unrecovered_advance)",
+    }
+
+    if paid_net_revenue <= 0:
+        return {
+            "eligible": False,
+            "RA": None,
+            "reason": (
+                f"No paid net revenue in current cycle "
+                f"({start_date.isoformat()} → {end_date.isoformat()})"
+            ),
+            "details": details,
+        }
+
+    if amount_due <= 0:
+        return {
+            "eligible": False,
+            "RA": None,
+            "reason": (
+                f"Royalty earned ({float(royalty_earned)}) does not exceed "
+                f"unrecovered advance ({float(unrecovered_advance)})"
+            ),
+            "details": details,
+        }
+
+    return {
+        "eligible": True,
+        "RA": amount_due,
+        "reason": "",
+        "details": details,
+    }
+
+
+def compute_list_price_ra_v1_price_transactions(
+    *,
+    product,
+    period_start: datetime,
+    Y: Decimal,
+    commission_as_decimal: Decimal,
+) -> dict[str, Any]:
+    """
+    V1 BACKUP — previous list_price Step 4 only (do not use in production path).
+
+    RA = Y × sum(printrun.price × invoice_item_count_in_edition_window) × (commission/100)
+    Eligibility (X, Y) is unchanged and computed by the caller.
+    """
+    from datetime import datetime
+
+    from inventory.models import PrintRun
+
+    print_runs = list(
+        PrintRun.objects.filter(product=product).order_by("published_at", "edition_number")
+    )
+    if not print_runs:
+        raise ValueError(
+            "No PrintRuns found for this product. PrintRuns are required for list_price calculation."
+        )
+
+    sum_price_transactions = Decimal("0")
+    for i, print_run in enumerate(print_runs):
+        start_date = timezone.make_aware(
+            datetime.combine(print_run.published_at, datetime.min.time())
+        )
+        if i + 1 < len(print_runs):
+            next_print_run = print_runs[i + 1]
+            end_date = timezone.make_aware(
+                datetime.combine(next_print_run.published_at, datetime.min.time())
+            )
+        else:
+            end_date = timezone.now()
+
+        range_start = start_date if start_date >= period_start else period_start
+        if range_start >= end_date:
+            transaction_count = 0
+        else:
+            transaction_count = InvoiceItem.objects.filter(
+                product=product,
+                created_at__gte=range_start,
+                created_at__lt=end_date,
+            ).count()
+
+        sum_price_transactions += Decimal(str(print_run.price or 0)) * Decimal(
+            str(transaction_count)
+        )
+
+    ra = (Decimal(str(Y)) * sum_price_transactions * commission_as_decimal).quantize(
+        Decimal("0.01")
+    )
+    return {
+        "RA": ra,
+        "details": {
+            "version": "v1_list_price_transactions_backup",
+            "sum_price_transactions": float(sum_price_transactions),
+            "formula": "RA = Y × sum(printrun.price × transaction_count) × %",
+        },
+    }
+
+
+def compute_list_price_ra_from_paid_copies(
+    *,
+    Y: Decimal,
+    book_price: Decimal,
+    commission_percent: Decimal,
+) -> dict[str, Any]:
+    """
+    Current list_price Step 4 (eligibility unchanged in the view).
+
+    RA = paid eligible copies (Y) × book list price × (commission_percent / 100)
+    """
+    commission_as_decimal = Decimal(str(commission_percent)) / Decimal("100")
+    price_value = Decimal(str(book_price))
+    y_value = Decimal(str(Y))
+    ra = (y_value * price_value * commission_as_decimal).quantize(Decimal("0.01"))
+    return {
+        "RA": ra,
+        "details": {
+            "version": "v2_list_price_paid_copies",
+            "Y": float(y_value) if not float(y_value).is_integer() else int(y_value),
+            "book_price": float(price_value),
+            "commission_percent": float(commission_percent),
+            "formula": "RA = Y × book_price × (commission_percent / 100)",
+        },
+    }
+
+
 @transaction.atomic
 def upsert_open_royalty_settlement(
     *,

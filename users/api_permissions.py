@@ -80,6 +80,8 @@ _API_PAGE_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("/api/permissions/roles", ("/admin/role-permissions",)),
     ("/api/permissions/users", ("/admin/user-permissions",)),
     # Common definitions
+    # Read-only (ListAPIView); writes go through the generic /api/common/list-items/ routes.
+    ("/api/common/list-items/pos_hidden_warehouses", ("/admin/common", "/pos", "/definitions/warehouses")),
     ("/api/common", ("/admin/common",)),
 ]
 

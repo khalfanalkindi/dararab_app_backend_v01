@@ -11,6 +11,21 @@ from .models import (PrintRun, PrintTask, Product, Stakeholder, Warehouse, Inven
 from common.models import ListItem
 from common.serializers import ListItemSerializer
 from django.contrib.contenttypes.models import ContentType
+from django.core.files.storage import default_storage
+
+
+def cover_design_absolute_url(value, request=None):
+    """External URLs pass through; stored paths (book_covers/...) resolve under MEDIA_URL."""
+    if not value:
+        return None
+    try:
+        URLValidator()(value)
+        return value
+    except ValidationError:
+        media_url = default_storage.url(value)
+        if request is not None and hasattr(request, "build_absolute_uri"):
+            return request.build_absolute_uri(media_url)
+        return media_url
 
 
 class CoverDesignSerializerField(serializers.Field):
@@ -19,20 +34,7 @@ class CoverDesignSerializerField(serializers.Field):
     """
     
     def to_representation(self, value):
-        if not value:
-            return None
-        
-        # If it's a URL, return as is
-        url_validator = URLValidator()
-        try:
-            url_validator(value)
-            return value
-        except ValidationError:
-            # It's a file path, return the full URL
-            request = self.context.get('request')
-            if request and hasattr(request, 'build_absolute_uri'):
-                return request.build_absolute_uri(value)
-            return value
+        return cover_design_absolute_url(value, self.context.get('request'))
     
     def to_internal_value(self, data):
         if not data:
@@ -699,22 +701,7 @@ class ProductSummarySerializer(serializers.ModelSerializer):
         ]
     
     def get_cover_design_url(self, obj):
-        if not obj.cover_design:
-            return None
-            
-        request = self.context.get("request")
-        
-        # Check if it's a URL
-        url_validator = URLValidator()
-        try:
-            url_validator(obj.cover_design)
-            # It's already a URL, return as is
-            return obj.cover_design
-        except ValidationError:
-            # It's a file path, build the full URL
-            if request and hasattr(request, 'build_absolute_uri'):
-                return request.build_absolute_uri(obj.cover_design)
-            return obj.cover_design
+        return cover_design_absolute_url(obj.cover_design, self.context.get("request"))
 
 class POSProductSummarySerializer(ProductSummarySerializer):
     warehouse_stock = serializers.SerializerMethodField()

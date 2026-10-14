@@ -1987,17 +1987,49 @@ class StockWriteoffListCreateView(APIView):
             }
         )
 
+    MAX_BATCH_ITEMS = 100
+
     def post(self, request):
+        """
+        Single:  { product_id, warehouse_id, movement_type, quantity, reason }
+        Batch:   { warehouse_id, movement_type, reason, items: [{ product_id, quantity }, ...] }
+
+        A batch is all-or-nothing: any failing line rolls back every line.
+        """
         from inventory.services.stock_ledger import apply_delta, StockLedgerError
 
         data = request.data if isinstance(request.data, dict) else {}
+        is_batch = "items" in data
+
         try:
-            product_id = int(data.get("product_id"))
             warehouse_id = int(data.get("warehouse_id"))
-            quantity = int(data.get("quantity"))
         except (TypeError, ValueError):
             return Response(
-                {"detail": "product_id, warehouse_id, and quantity must be integers."},
+                {"detail": "warehouse_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw_items = data.get("items") if is_batch else [
+            {"product_id": data.get("product_id"), "quantity": data.get("quantity")}
+        ]
+        if not isinstance(raw_items, list) or not raw_items:
+            return Response(
+                {"detail": "items must be a non-empty list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(raw_items) > self.MAX_BATCH_ITEMS:
+            return Response(
+                {"detail": f"A batch can contain at most {self.MAX_BATCH_ITEMS} books."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        items: list[tuple[int, int]] = []
+        try:
+            for raw in raw_items:
+                items.append((int(raw.get("product_id")), int(raw.get("quantity"))))
+        except (TypeError, ValueError, AttributeError):
+            return Response(
+                {"detail": "Each item needs integer product_id and quantity."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2009,9 +2041,15 @@ class StockWriteoffListCreateView(APIView):
                 {"detail": "movement_type must be one of: damage, loss, reserved."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if quantity <= 0:
+        if any(qty <= 0 for _, qty in items):
             return Response(
                 {"detail": "quantity must be greater than 0."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        product_ids = [pid for pid, _ in items]
+        if len(set(product_ids)) != len(product_ids):
+            return Response(
+                {"detail": "Each book can appear only once in a batch."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if not reason:
@@ -2019,48 +2057,85 @@ class StockWriteoffListCreateView(APIView):
                 {"detail": "reason is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not Product.objects.filter(pk=product_id).exists():
-            return Response({"detail": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
+        products = {p.id: p for p in Product.objects.filter(pk__in=product_ids)}
+        missing = [pid for pid in product_ids if pid not in products]
+        if missing:
+            return Response(
+                {"detail": f"Product not found: {', '.join(map(str, missing))}."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         if not Warehouse.objects.filter(pk=warehouse_id).exists():
             return Response({"detail": "Warehouse not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        movements = []
+        current_product_id = None
         try:
             with transaction.atomic():
-                movement = apply_delta(
-                    product_id=product_id,
-                    warehouse_id=warehouse_id,
-                    delta=-quantity,
-                    movement_type=movement_type,
-                    user=request.user,
-                    notes=reason,
-                    reference_code=f"writeoff:{movement_type}",
-                )
+                for product_id, quantity in items:
+                    current_product_id = product_id
+                    movement = apply_delta(
+                        product_id=product_id,
+                        warehouse_id=warehouse_id,
+                        delta=-quantity,
+                        movement_type=movement_type,
+                        user=request.user,
+                        notes=reason,
+                        reference_code=f"writeoff:{movement_type}",
+                    )
+                    movements.append((movement, quantity))
         except StockLedgerError as exc:
-            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+            product = products.get(current_product_id)
+            label = (product.title_en or product.title_ar or product.isbn) if product else ""
+            message = _flatten_error_detail(exc.detail)
+            return Response(
+                {
+                    "detail": f"{label}: {message}" if label else message,
+                    "product_id": current_product_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except Exception as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        inv = Inventory.objects.filter(
-            product_id=product_id, warehouse_id=warehouse_id
-        ).first()
+        stock_by_product = dict(
+            Inventory.objects.filter(
+                product_id__in=product_ids, warehouse_id=warehouse_id
+            ).values_list("product_id", "quantity")
+        )
+        payload = [
+            {
+                "id": movement.id,
+                "product_id": movement.product_id,
+                "warehouse_id": movement.warehouse_id,
+                "movement_type": movement.movement_type,
+                "quantity": quantity,
+                "quantity_before": movement.quantity_before,
+                "quantity_after": movement.quantity_after,
+                "reason": movement.notes,
+                "occurred_at": (
+                    movement.occurred_at.isoformat() if movement.occurred_at else None
+                ),
+                "current_stock": int(
+                    stock_by_product.get(movement.product_id, movement.quantity_after) or 0
+                ),
+            }
+            for movement, quantity in movements
+        ]
         return Response(
             {
                 "detail": "Stock write-off recorded.",
-                "movement": {
-                    "id": movement.id,
-                    "product_id": movement.product_id,
-                    "warehouse_id": movement.warehouse_id,
-                    "movement_type": movement.movement_type,
-                    "quantity": quantity,
-                    "quantity_before": movement.quantity_before,
-                    "quantity_after": movement.quantity_after,
-                    "reason": movement.notes,
-                    "occurred_at": (
-                        movement.occurred_at.isoformat() if movement.occurred_at else None
-                    ),
-                    "current_stock": int(inv.quantity or 0) if inv else movement.quantity_after,
-                },
+                "movement": payload[0],
+                "movements": payload,
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+def _flatten_error_detail(detail) -> str:
+    """Turn DRF ErrorDetail dict/list structures into a single readable string."""
+    if isinstance(detail, dict):
+        return "; ".join(_flatten_error_detail(v) for v in detail.values())
+    if isinstance(detail, (list, tuple)):
+        return "; ".join(_flatten_error_detail(v) for v in detail)
+    return str(detail)
 

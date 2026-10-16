@@ -1851,6 +1851,22 @@ class ProductSummaryView(generics.ListAPIView):
         if language_id:
             queryset = queryset.filter(language_id=language_id)
 
+        # Optional: only books whose stock is not zero. With warehouse_id,
+        # that means stock in that warehouse; otherwise total stock.
+        in_stock = (params.get("in_stock") or "").strip().lower() in {"1", "true", "yes"}
+        warehouse_id = (params.get("warehouse_id") or "").strip()
+        if in_stock and warehouse_id.isdigit():
+            queryset = queryset.filter(
+                Exists(
+                    Inventory.objects.filter(
+                        product_id=OuterRef("pk"),
+                        warehouse_id=int(warehouse_id),
+                    ).exclude(quantity=0)
+                )
+            )
+        elif in_stock:
+            queryset = queryset.exclude(stock=0)
+
         return queryset.order_by('id')
     def get_serializer_context(self):
 

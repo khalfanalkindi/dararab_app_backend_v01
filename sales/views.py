@@ -1993,12 +1993,9 @@ class RoyaltySettlementReportView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if row.status not in (
-            RoyaltySettlement.Status.SETTLED,
-            RoyaltySettlement.Status.OPEN,
-        ):
+        if row.status != RoyaltySettlement.Status.SETTLED:
             return Response(
-                {"error": "Report is available for open or settled calculations"},
+                {"error": "Report is available only after the settlement is locked"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

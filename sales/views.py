@@ -1421,10 +1421,82 @@ class CalculateRoyaltiesView(APIView):
     ):
         from sales.services.royalty_settlement import (
             settlement_payload,
+            settle_gate_for_contract,
+            settle_open_royalty_settlement,
             upsert_open_royalty_settlement,
         )
 
         amount_due = ra if eligible and ra is not None else Decimal("0.00")
+        gate = settle_gate_for_contract(contract=contract, project=project)
+        payload = {
+            "eligible": eligible,
+            "RA": float(ra) if ra is not None else None,
+            "currency": currency,
+            "reason": reason or None,
+            "details": details,
+            "settle_gate": gate,
+            "saved": False,
+        }
+
+        # Eligibility check and Calculate are previews: nothing is written.
+        if bool(request.data.get("preview")):
+            return Response(payload, status=status.HTTP_200_OK)
+
+        # Settle is the only action that writes, then locks the cycle.
+        if bool(request.data.get("settle")):
+            if not eligible or Decimal(str(amount_due or 0)) <= 0:
+                return Response(
+                    {
+                        "error": reason or "Not eligible to settle.",
+                        "eligible": eligible,
+                        "reason": reason or None,
+                        "settle_gate": gate,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not gate.get("can_settle"):
+                return Response(
+                    {
+                        "error": gate.get("reason") or "Settle is not allowed yet.",
+                        "settle_gate": gate,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                with transaction.atomic():
+                    row = upsert_open_royalty_settlement(
+                        contract=contract,
+                        project=project,
+                        product=product,
+                        user=request.user,
+                        eligible=eligible,
+                        amount_due=amount_due,
+                        reason=reason or "",
+                        details=details,
+                    )
+                    result = settle_open_royalty_settlement(
+                        settlement_id=row.id,
+                        user=request.user,
+                    )
+            except serializers.ValidationError as e:
+                detail = e.detail if hasattr(e, "detail") else str(e)
+                return Response({"error": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+            settled = result["settled"]
+            return Response(
+                {
+                    **payload,
+                    "saved": True,
+                    "settled": settlement_payload(settled),
+                    "next_open": settlement_payload(result["next_open"]),
+                    "reports": {
+                        "pdf": f"/api/sales/royalty-settlements/{settled.id}/report/?format=pdf",
+                        "xlsx": f"/api/sales/royalty-settlements/{settled.id}/report/?format=xlsx",
+                    },
+                },
+                status=status.HTTP_200_OK,
+            )
+
         row = upsert_open_royalty_settlement(
             contract=contract,
             project=project,
@@ -1435,17 +1507,8 @@ class CalculateRoyaltiesView(APIView):
             reason=reason or "",
             details=details,
         )
-        payload = {
-            "eligible": eligible,
-            "RA": float(ra) if ra is not None else None,
-            "currency": currency,
-            "reason": reason or None,
-            "details": details,
-            "settlement": settlement_payload(row),
-            "saved": True,
-        }
-        if not reason:
-            payload.pop("reason", None)
+        payload["settlement"] = settlement_payload(row)
+        payload["saved"] = True
         return Response(payload, status=status.HTTP_200_OK)
     
     def post(self, request):
@@ -1474,6 +1537,20 @@ class CalculateRoyaltiesView(APIView):
                     'project', 'royalties_type'
                 ).get(id=contract_id)
                 project = contract.project
+
+                if project_id not in (None, ""):
+                    try:
+                        requested_project_id = int(project_id)
+                    except (TypeError, ValueError):
+                        return Response(
+                            {"error": "project_id must be an integer"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if project.id != requested_project_id:
+                        return Response(
+                            {"error": "The selected contract does not belong to the selected project."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                 
                 # Get product from project
                 # Project can be converted to product, so check if product exists for this project

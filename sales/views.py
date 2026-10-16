@@ -1393,7 +1393,11 @@ class CalculateRoyaltiesView(APIView):
            * V1 backup kept in compute_list_price_ra_v1_price_transactions
          - retail_price (id=53):
            * paid_net_revenue from book-sales analytics (payment_status=paid)
-           * royalty_earned = paid_net_revenue × (commission_percent/100)
+           * 100% / zero-price lines are already 0
+           * author_paid_net_revenue = same figure for contact_person DARARAB, subtracted once
+           * writeoff_value = unlinked damage/loss/complimentary copies × book_price
+           * royalty_base = max(0, paid_net_revenue − author_paid_net_revenue − writeoff_value)
+           * royalty_earned = royalty_base × (commission_percent/100)
            * unrecovered_advance = 0 if prior settled else fixed_amount
            * RA = max(0, royalty_earned − unrecovered_advance)
            * V1 backup kept in compute_retail_royalties_v1_invoice_paid
@@ -1578,6 +1582,7 @@ class CalculateRoyaltiesView(APIView):
                     fixed_amount=Decimal(str(contract.fixed_amount)),
                     commission_percent=Decimal(str(contract.commission_percent)),
                     prior_settled=prior_settled,
+                    book_price=Decimal(str(print_run.price)),
                 )
                 details = {
                     **(retail.get("details") or {}),
@@ -1942,7 +1947,7 @@ class RoyaltySettlementReportView(APIView):
 
     GET /api/sales/royalty-settlements/<id>/report/?format=pdf|xlsx
 
-    PDF: bilingual summary + logo + signature blocks (preamble placeholder).
+    PDF: sales and royalty statement with the invoice header (logo and contact).
     Excel: accounting one-row summary (no calculation dump).
     Available for settled rows (and cancelled for audit if needed later).
     """
@@ -1973,7 +1978,11 @@ class RoyaltySettlementReportView(APIView):
                 RoyaltySettlement.objects.select_related(
                     "contract",
                     "project",
+                    "project__author",
+                    "project__rights_owner",
                     "product",
+                    "product__author",
+                    "product__rights_owner",
                     "settled_by",
                     "calculated_by",
                 ).get(pk=pk)
@@ -1984,9 +1993,12 @@ class RoyaltySettlementReportView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if row.status != RoyaltySettlement.Status.SETTLED:
+        if row.status not in (
+            RoyaltySettlement.Status.SETTLED,
+            RoyaltySettlement.Status.OPEN,
+        ):
             return Response(
-                {"error": "Report is available only for settled settlements"},
+                {"error": "Report is available for open or settled calculations"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

@@ -238,6 +238,50 @@ def compute_retail_royalties_v1_invoice_paid(
     }
 
 
+def count_unlinked_stock_writeoffs(*, product_id: int, period_start: datetime) -> dict[str, int]:
+    """
+    Damage, loss, and complimentary copies in this cycle.
+
+    Movements linked to an invoice item are skipped. Those lines are already
+    in paid net revenue (100% / zero-price lines contribute 0), so counting
+    them here would deduct the same copies twice.
+    """
+    from django.db.models import Sum
+
+    from inventory.models import StockMovement
+
+    writeoff_types = [
+        StockMovement.MovementType.DAMAGE,
+        StockMovement.MovementType.LOSS,
+        StockMovement.MovementType.COMPLIMENTARY,
+    ]
+    base = StockMovement.objects.filter(
+        product_id=product_id,
+        movement_type__in=writeoff_types,
+        invoice_item_id__isnull=True,
+        occurred_at__gte=period_start,
+    )
+
+    def _copies(movement_type: str) -> int:
+        total = base.filter(movement_type=movement_type).aggregate(total=Sum("quantity_delta"))[
+            "total"
+        ]
+        return abs(int(total or 0))
+
+    damaged = _copies(StockMovement.MovementType.DAMAGE)
+    lost = _copies(StockMovement.MovementType.LOSS)
+    complimentary = _copies(StockMovement.MovementType.COMPLIMENTARY)
+    return {
+        "damaged_copies": damaged,
+        "lost_copies": lost,
+        "complimentary_stock_copies": complimentary,
+        "stock_excluded_copies": damaged + lost + complimentary,
+    }
+
+
+AUTHOR_CONTACT_PERSON = "DARARAB"
+
+
 def compute_retail_royalties_from_paid_net_revenue(
     *,
     product_id: int,
@@ -245,15 +289,22 @@ def compute_retail_royalties_from_paid_net_revenue(
     fixed_amount: Decimal,
     commission_percent: Decimal,
     prior_settled: bool,
+    book_price: Decimal,
 ) -> dict[str, Any]:
     """
     Current retail_price formula (matches book-sales paid net revenue).
 
     1. paid_net_revenue = BookAnalytics summary.net_revenue with payment_status=paid
        for invoices from period_start through today (same rules as /reports/book-sales).
-    2. royalty_earned = paid_net_revenue × (commission_percent / 100)
-    3. unrecovered_advance = 0 if prior_settled else fixed_amount
-    4. amount_due = max(0, royalty_earned − unrecovered_advance)
+       100% discount and zero-price lines are already 0 in that figure.
+    2. author_paid_net_revenue = the same figure limited to contact_person DARARAB.
+       Subtracted once. Author lines already at 100% are 0 here, so they are not
+       removed a second time.
+    3. writeoff_value = unlinked damage/loss/complimentary copies × book_price
+    4. royalty_base = max(0, paid_net_revenue − author_paid_net_revenue − writeoff_value)
+    5. royalty_earned = royalty_base × (commission_percent / 100)
+    6. unrecovered_advance = 0 if prior_settled else fixed_amount
+    7. amount_due = max(0, royalty_earned − unrecovered_advance)
     """
     from sales.services.book_analytics import BookAnalyticsFilters, BookAnalyticsService
 
@@ -265,22 +316,41 @@ def compute_retail_royalties_from_paid_net_revenue(
     if end_date < start_date:
         end_date = start_date
 
-    payload = BookAnalyticsService(
-        product_id,
-        BookAnalyticsFilters(
-            start_date=start_date,
-            end_date=end_date,
-            payment_status="paid",
-            page=1,
-            page_size=1,
-        ),
-    ).build()
+    def _paid_summary(*, contact_person: str | None = None) -> dict[str, Any]:
+        built = BookAnalyticsService(
+            product_id,
+            BookAnalyticsFilters(
+                start_date=start_date,
+                end_date=end_date,
+                payment_status="paid",
+                contact_person=contact_person,
+                page=1,
+                page_size=1,
+            ),
+        ).build()
+        return built["summary"]
 
-    paid_net_revenue = Decimal(str(payload["summary"]["net_revenue"] or 0)).quantize(
+    summary = _paid_summary()
+    author_summary = _paid_summary(contact_person=AUTHOR_CONTACT_PERSON)
+    paid_net_revenue = Decimal(str(summary["net_revenue"] or 0)).quantize(Decimal("0.01"))
+    author_paid_net_revenue = Decimal(str(author_summary["net_revenue"] or 0)).quantize(
         Decimal("0.01")
     )
+    if author_paid_net_revenue > paid_net_revenue:
+        author_paid_net_revenue = paid_net_revenue
+    writeoffs = count_unlinked_stock_writeoffs(
+        product_id=product_id,
+        period_start=period_start,
+    )
+    price_value = Decimal(str(book_price)).quantize(Decimal("0.01"))
+    writeoff_value = (
+        Decimal(writeoffs["stock_excluded_copies"]) * price_value
+    ).quantize(Decimal("0.01"))
+    royalty_base = paid_net_revenue - author_paid_net_revenue - writeoff_value
+    if royalty_base < 0:
+        royalty_base = Decimal("0.00")
     commission_as_decimal = Decimal(str(commission_percent)) / Decimal("100")
-    royalty_earned = (paid_net_revenue * commission_as_decimal).quantize(Decimal("0.01"))
+    royalty_earned = (royalty_base * commission_as_decimal).quantize(Decimal("0.01"))
     fixed_amount_value = Decimal(str(fixed_amount)).quantize(Decimal("0.01"))
     unrecovered_advance = (
         Decimal("0.00") if prior_settled else fixed_amount_value
@@ -292,6 +362,19 @@ def compute_retail_royalties_from_paid_net_revenue(
     details = {
         "version": "v2_paid_net_revenue",
         "paid_net_revenue": float(paid_net_revenue),
+        "copies_paid": int(summary.get("copies_paid") or 0),
+        "copies_complimentary": int(summary.get("copies_complimentary") or 0),
+        "author_contact_person": AUTHOR_CONTACT_PERSON,
+        "author_paid_net_revenue": float(author_paid_net_revenue),
+        "author_copies_paid": int(author_summary.get("copies_paid") or 0),
+        "author_copies_complimentary": int(author_summary.get("copies_complimentary") or 0),
+        "book_price": float(price_value),
+        "damaged_copies": writeoffs["damaged_copies"],
+        "lost_copies": writeoffs["lost_copies"],
+        "complimentary_stock_copies": writeoffs["complimentary_stock_copies"],
+        "stock_excluded_copies": writeoffs["stock_excluded_copies"],
+        "writeoff_value": float(writeoff_value),
+        "royalty_base": float(royalty_base),
         "royalty_earned": float(royalty_earned),
         "unrecovered_advance": float(unrecovered_advance),
         "amount_due": float(amount_due),
@@ -301,17 +384,30 @@ def compute_retail_royalties_from_paid_net_revenue(
         "period_start_date": start_date.isoformat(),
         "period_end_date": end_date.isoformat(),
         "prior_settled": prior_settled,
-        "formula": "amount_due = max(0, paid_net_revenue × % − unrecovered_advance)",
+        "formula": (
+            "royalty_base = max(0, paid_net_revenue − author_paid_net_revenue "
+            "− writeoff_copies × book_price); "
+            "amount_due = max(0, royalty_base × % − unrecovered_advance)"
+        ),
     }
 
-    if paid_net_revenue <= 0:
+    if royalty_base <= 0:
+        if paid_net_revenue <= 0:
+            reason = (
+                f"No paid net revenue in current cycle "
+                f"({start_date.isoformat()} → {end_date.isoformat()})"
+            )
+        else:
+            reason = (
+                f"Paid net revenue ({float(paid_net_revenue)}) is fully offset by "
+                f"author ({AUTHOR_CONTACT_PERSON}) revenue ({float(author_paid_net_revenue)}) "
+                f"and write-off value ({float(writeoff_value)}) from "
+                f"{writeoffs['stock_excluded_copies']} damage/loss/complimentary copies"
+            )
         return {
             "eligible": False,
             "RA": None,
-            "reason": (
-                f"No paid net revenue in current cycle "
-                f"({start_date.isoformat()} → {end_date.isoformat()})"
-            ),
+            "reason": reason,
             "details": details,
         }
 

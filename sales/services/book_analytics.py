@@ -105,6 +105,7 @@ class BookAnalyticsFilters:
     invoice_search: Optional[str] = None
     discount_min: Optional[Decimal] = None
     discount_max: Optional[Decimal] = None
+    contact_person: Optional[str] = None
     page: int = 1
     page_size: int = 50
 
@@ -120,6 +121,7 @@ class BookAnalyticsFilters:
             "invoice_search": self.invoice_search,
             "discount_min": float(self.discount_min) if self.discount_min is not None else None,
             "discount_max": float(self.discount_max) if self.discount_max is not None else None,
+            "contact_person": self.contact_person,
             "page": self.page,
             "page_size": self.page_size,
         }
@@ -263,6 +265,12 @@ class BookAnalyticsService:
             qs = qs.filter(discount_percent__gte=f.discount_min)
         if f.discount_max is not None:
             qs = qs.filter(discount_percent__lte=f.discount_max)
+        if f.contact_person:
+            from django.db.models.functions import Trim, Upper
+
+            qs = qs.annotate(
+                _contact_key=Upper(Trim("invoice__customer__contact_person"))
+            ).filter(_contact_key=f.contact_person.strip().upper())
 
         return qs
 

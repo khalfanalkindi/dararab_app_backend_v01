@@ -1393,7 +1393,11 @@ class CalculateRoyaltiesView(APIView):
            * V1 backup kept in compute_list_price_ra_v1_price_transactions
          - retail_price (id=53):
            * paid_net_revenue from book-sales analytics (payment_status=paid)
-           * royalty_earned = paid_net_revenue × (commission_percent/100)
+           * 100% / zero-price lines are already 0
+           * author_paid_net_revenue = same figure for contact_person DARARAB, subtracted once
+           * writeoff_value = unlinked damage/loss/complimentary copies × book_price
+           * royalty_base = max(0, paid_net_revenue − author_paid_net_revenue − writeoff_value)
+           * royalty_earned = royalty_base × (commission_percent/100)
            * unrecovered_advance = 0 if prior settled else fixed_amount
            * RA = max(0, royalty_earned − unrecovered_advance)
            * V1 backup kept in compute_retail_royalties_v1_invoice_paid
@@ -1417,10 +1421,82 @@ class CalculateRoyaltiesView(APIView):
     ):
         from sales.services.royalty_settlement import (
             settlement_payload,
+            settle_gate_for_contract,
+            settle_open_royalty_settlement,
             upsert_open_royalty_settlement,
         )
 
         amount_due = ra if eligible and ra is not None else Decimal("0.00")
+        gate = settle_gate_for_contract(contract=contract, project=project)
+        payload = {
+            "eligible": eligible,
+            "RA": float(ra) if ra is not None else None,
+            "currency": currency,
+            "reason": reason or None,
+            "details": details,
+            "settle_gate": gate,
+            "saved": False,
+        }
+
+        # Eligibility check and Calculate are previews: nothing is written.
+        if bool(request.data.get("preview")):
+            return Response(payload, status=status.HTTP_200_OK)
+
+        # Settle is the only action that writes, then locks the cycle.
+        if bool(request.data.get("settle")):
+            if not eligible or Decimal(str(amount_due or 0)) <= 0:
+                return Response(
+                    {
+                        "error": reason or "Not eligible to settle.",
+                        "eligible": eligible,
+                        "reason": reason or None,
+                        "settle_gate": gate,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not gate.get("can_settle"):
+                return Response(
+                    {
+                        "error": gate.get("reason") or "Settle is not allowed yet.",
+                        "settle_gate": gate,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                with transaction.atomic():
+                    row = upsert_open_royalty_settlement(
+                        contract=contract,
+                        project=project,
+                        product=product,
+                        user=request.user,
+                        eligible=eligible,
+                        amount_due=amount_due,
+                        reason=reason or "",
+                        details=details,
+                    )
+                    result = settle_open_royalty_settlement(
+                        settlement_id=row.id,
+                        user=request.user,
+                    )
+            except serializers.ValidationError as e:
+                detail = e.detail if hasattr(e, "detail") else str(e)
+                return Response({"error": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+            settled = result["settled"]
+            return Response(
+                {
+                    **payload,
+                    "saved": True,
+                    "settled": settlement_payload(settled),
+                    "next_open": settlement_payload(result["next_open"]),
+                    "reports": {
+                        "pdf": f"/api/sales/royalty-settlements/{settled.id}/report/?format=pdf",
+                        "xlsx": f"/api/sales/royalty-settlements/{settled.id}/report/?format=xlsx",
+                    },
+                },
+                status=status.HTTP_200_OK,
+            )
+
         row = upsert_open_royalty_settlement(
             contract=contract,
             project=project,
@@ -1431,17 +1507,8 @@ class CalculateRoyaltiesView(APIView):
             reason=reason or "",
             details=details,
         )
-        payload = {
-            "eligible": eligible,
-            "RA": float(ra) if ra is not None else None,
-            "currency": currency,
-            "reason": reason or None,
-            "details": details,
-            "settlement": settlement_payload(row),
-            "saved": True,
-        }
-        if not reason:
-            payload.pop("reason", None)
+        payload["settlement"] = settlement_payload(row)
+        payload["saved"] = True
         return Response(payload, status=status.HTTP_200_OK)
     
     def post(self, request):
@@ -1470,6 +1537,20 @@ class CalculateRoyaltiesView(APIView):
                     'project', 'royalties_type'
                 ).get(id=contract_id)
                 project = contract.project
+
+                if project_id not in (None, ""):
+                    try:
+                        requested_project_id = int(project_id)
+                    except (TypeError, ValueError):
+                        return Response(
+                            {"error": "project_id must be an integer"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if project.id != requested_project_id:
+                        return Response(
+                            {"error": "The selected contract does not belong to the selected project."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                 
                 # Get product from project
                 # Project can be converted to product, so check if product exists for this project
@@ -1578,6 +1659,7 @@ class CalculateRoyaltiesView(APIView):
                     fixed_amount=Decimal(str(contract.fixed_amount)),
                     commission_percent=Decimal(str(contract.commission_percent)),
                     prior_settled=prior_settled,
+                    book_price=Decimal(str(print_run.price)),
                 )
                 details = {
                     **(retail.get("details") or {}),
@@ -1942,7 +2024,7 @@ class RoyaltySettlementReportView(APIView):
 
     GET /api/sales/royalty-settlements/<id>/report/?format=pdf|xlsx
 
-    PDF: bilingual summary + logo + signature blocks (preamble placeholder).
+    PDF: sales and royalty statement with the invoice header (logo and contact).
     Excel: accounting one-row summary (no calculation dump).
     Available for settled rows (and cancelled for audit if needed later).
     """
@@ -1973,7 +2055,11 @@ class RoyaltySettlementReportView(APIView):
                 RoyaltySettlement.objects.select_related(
                     "contract",
                     "project",
+                    "project__author",
+                    "project__rights_owner",
                     "product",
+                    "product__author",
+                    "product__rights_owner",
                     "settled_by",
                     "calculated_by",
                 ).get(pk=pk)
@@ -1986,7 +2072,7 @@ class RoyaltySettlementReportView(APIView):
 
         if row.status != RoyaltySettlement.Status.SETTLED:
             return Response(
-                {"error": "Report is available only for settled settlements"},
+                {"error": "Report is available only after the settlement is locked"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

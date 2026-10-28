@@ -88,12 +88,38 @@ def _user_display(user) -> str:
     return full or getattr(user, "username", None) or str(user)
 
 
+COMPANY_NAME = "DarArab for Publishing & Translation"
+COMPANY_ADDRESS = "Seeb, Muscat, Sultanate of Oman"
+COMPANY_TEL = "+96871523542"
+COMPANY_EMAIL = "info@dararab.co.uk"
+COMPANY_WEB = "dararab.co.uk"
+
+
 def report_context(row: RoyaltySettlement) -> dict[str, Any]:
     """Flatten settlement + related titles for PDF/Excel builders."""
+    from django.db.models import Sum
+
+    from inventory.models import Inventory
+
     contract = row.contract
     project = row.project
     product = row.product
     details = row.calculation_details if isinstance(row.calculation_details, dict) else {}
+    author = None
+    rights_owner = None
+    if product is not None:
+        author = product.author
+        rights_owner = product.rights_owner
+    if author is None and project is not None:
+        author = project.author
+    if rights_owner is None and project is not None:
+        rights_owner = project.rights_owner
+    stock_remaining = (
+        Inventory.objects.filter(product_id=row.product_id).aggregate(total=Sum("quantity"))[
+            "total"
+        ]
+        or 0
+    )
 
     return {
         "id": row.id,
@@ -124,6 +150,16 @@ def report_context(row: RoyaltySettlement) -> dict[str, Any]:
         "Y": details.get("Y"),
         "X": details.get("X"),
         "actual_paid": details.get("actual_paid"),
+        "author_name": str(author) if author else "—",
+        "rights_owner_name": str(rights_owner) if rights_owner else "—",
+        "stock_remaining": int(stock_remaining),
+        "book_title": (
+            (product.title_en if product else None)
+            or (product.title_ar if product else None)
+            or (project.title_original if project else None)
+            or (project.title_ar if project else None)
+            or "—"
+        ),
     }
 
 
@@ -194,21 +230,63 @@ def build_excel_bytes(row: RoyaltySettlement) -> bytes:
 
 def build_pdf_bytes(row: RoyaltySettlement) -> bytes:
     """
-    Simple A4 bilingual PDF: logo, placeholder preamble, summary, signatures.
+    A4 sales and royalty statement.
+
+    Header matches the sales invoice: logo plus Seeb address, telephone,
+    email, and website. Body follows the annual statement layout.
     """
     _register_fonts()
     ctx = report_context(row)
+    details = ctx["details"] if isinstance(ctx["details"], dict) else {}
 
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     width, height = A4
-    margin = 18 * mm
+    margin = 16 * mm
     y = height - margin
 
-    # Logo
+    def ensure(space: float) -> None:
+        nonlocal y
+        if y < margin + space:
+            c.showPage()
+            y = height - margin
+            _register_fonts()
+
+    def rule() -> None:
+        nonlocal y
+        c.setStrokeColor(colors.HexColor("#222222"))
+        c.setLineWidth(0.6)
+        c.line(margin, y, width - margin, y)
+        y -= 6 * mm
+
+    def section(title: str) -> None:
+        nonlocal y
+        ensure(16 * mm)
+        c.setFillColor(colors.black)
+        c.setFont("NotoSans-Bold", 10)
+        c.drawString(margin, y, title)
+        y -= 2.5 * mm
+        c.setStrokeColor(colors.HexColor("#222222"))
+        c.setLineWidth(0.8)
+        c.line(margin, y, width - margin, y)
+        y -= 6 * mm
+
+    def pair(label: str, value: str, bold: bool = False) -> None:
+        nonlocal y
+        ensure(8 * mm)
+        c.setFillColor(colors.black)
+        c.setFont("NotoSans", 9)
+        c.drawString(margin, y, label)
+        c.setFont("NotoSans-Bold" if bold else "NotoSans", 9)
+        text = value or "—"
+        if len(text) > 70:
+            text = text[:67] + "..."
+        c.drawRightString(width - margin, y, text)
+        y -= 5.2 * mm
+
     if LOGO_PATH.exists():
-        logo_w = 42 * mm
-        logo_h = 18 * mm
+        logo_w = 28 * mm
+        logo_h = 16 * mm
         c.drawImage(
             str(LOGO_PATH),
             (width - logo_w) / 2,
@@ -218,147 +296,127 @@ def build_pdf_bytes(row: RoyaltySettlement) -> bytes:
             preserveAspectRatio=True,
             mask="auto",
         )
-        y -= logo_h + 6 * mm
-    else:
-        y -= 4 * mm
+        y -= logo_h + 3 * mm
 
-    # Brand / title
-    c.setFont("NotoSans-Bold", 14)
-    c.drawCentredString(width / 2, y, "DarArab Publishing")
-    y -= 7 * mm
-    c.setFont("NotoNaskhArabic", 13)
-    c.drawCentredString(width / 2, y, _ar("دار عرب للنشر"))
-    y -= 9 * mm
-
+    c.setFillColor(colors.black)
     c.setFont("NotoSans-Bold", 12)
-    c.drawCentredString(width / 2, y, "Royalty Settlement Report")
-    y -= 6 * mm
-    c.setFont("NotoNaskhArabic", 12)
-    c.drawCentredString(width / 2, y, _ar("تقرير تسوية الإتاوات"))
-    y -= 8 * mm
-
-    # Divider
-    c.setStrokeColor(colors.HexColor("#333333"))
-    c.setLineWidth(0.8)
-    c.line(margin, y, width - margin, y)
-    y -= 8 * mm
-
-    # Preamble (placeholder)
+    c.drawCentredString(width / 2, y, COMPANY_NAME)
+    y -= 5 * mm
     c.setFont("NotoSans", 8)
-    for line in _wrap_text(PREAMBLE_EN, 95):
-        c.drawString(margin, y, line)
+    for line in (
+        COMPANY_ADDRESS,
+        f"Tel: {COMPANY_TEL}",
+        f"Email: {COMPANY_EMAIL}",
+        f"Web: {COMPANY_WEB}",
+    ):
+        c.drawCentredString(width / 2, y, line)
         y -= 4 * mm
-    y -= 1 * mm
-    c.setFont("NotoNaskhArabic", 9)
-    for line in _wrap_text(PREAMBLE_AR, 70):
-        c.drawRightString(width - margin, y, _ar(line))
-        y -= 5 * mm
-    y -= 4 * mm
+    y -= 2 * mm
+    rule()
 
-    # Summary rows: (en_label, ar_label, value) where value is str or (en, ar)
-    rows: list[tuple[str, str, Any]] = [
-        ("Settlement ID", "رقم التسوية", f"#{ctx['id']}"),
-        ("Status", "الحالة", ctx["status"]),
-        ("Contract", "العقد", f"#{ctx['contract_id']} — {ctx['contract_title']}"),
-        (
-            "Project",
-            "المشروع",
-            (ctx["project_title_en"] or "—", ctx["project_title_ar"] or ""),
-        ),
-        (
-            "Product",
-            "المنتج",
-            (ctx["product_title_en"] or "—", ctx["product_title_ar"] or ""),
-        ),
-        ("ISBN", "ردمك", ctx["product_isbn"] or "—"),
-        ("Period start", "بداية الفترة", _fmt_dt(ctx["period_start"])),
-        ("Period end", "نهاية الفترة", _fmt_dt(ctx["period_end"])),
-        ("Amount due", "المبلغ المستحق", _fmt_money(ctx["amount_due"], ctx["currency"])),
-        (
-            "Amount paid",
-            "المبلغ المدفوع",
-            _fmt_money(ctx["amount_paid"], ctx["currency"])
-            if ctx["amount_paid"] is not None
-            else "—",
-        ),
-        ("Settled at", "تاريخ التسوية", _fmt_dt(ctx["settled_at"])),
-        ("Settled by", "تم بواسطة", ctx["settled_by"]),
-    ]
+    c.setFont("NotoSans-Bold", 13)
+    c.drawCentredString(width / 2, y, "ANNUAL STATEMENT")
+    y -= 5.5 * mm
+    c.setFont("NotoSans", 10)
+    c.drawCentredString(width / 2, y, "Sales and royalty statement")
+    y -= 7 * mm
 
-    # Light calc summary (not a full dump)
-    if ctx.get("Y") is not None:
-        rows.append(("Eligible copies (Y)", "النسخ المؤهلة (Y)", str(ctx["Y"])))
-    if ctx.get("commission_percent") is not None:
-        rows.append(
-            ("Commission %", "نسبة العمولة", f"{ctx['commission_percent']}%")
-        )
-    if ctx.get("royalties_type"):
-        rows.append(("Royalty type", "نوع الإتاوة", str(ctx["royalties_type"])))
+    period = details.get("period_start_date") or _fmt_dt(ctx["period_start"])
+    period_end = details.get("period_end_date") or _fmt_dt(ctx["period_end"])
+    pair("BOOK TITLE", ctx["book_title"], bold=True)
+    pair("AUTHOR / RIGHTS OWNER", f"{ctx['author_name']} / {ctx['rights_owner_name']}")
+    pair("REPORTING PERIOD", f"{period}  —  {period_end}")
+    pair("CURRENCY", ctx["currency"] or "USD")
+    y -= 2 * mm
 
-    for en_label, ar_label, value in rows:
-        if y < 55 * mm:
-            c.showPage()
-            y = height - margin
-            _register_fonts()
+    copies_paid = int(details.get("copies_paid") or 0)
+    copies_complimentary = int(details.get("copies_complimentary") or 0)
+    author_complimentary = int(details.get("author_copies_complimentary") or 0)
+    author_other = int(details.get("author_copies_paid") or 0)
+    gift_copies = max(0, copies_complimentary - author_complimentary)
+    author_copies = author_complimentary + author_other
+    copies_sold = max(0, copies_paid - author_other)
+    damaged = int(details.get("damaged_copies") or 0)
+    lost = int(details.get("lost_copies") or 0)
+    censorship = int(details.get("censorship_copies") or 0)
+    excluded_total = gift_copies + author_copies + damaged + lost + censorship
 
+    section("SALES AND STOCK COPIES")
+    pair("Copies sold during the period", str(copies_sold))
+    pair("Complimentary copies - gifts", str(gift_copies))
+    pair("Author copies (DARARAB, any discount)", str(author_copies))
+    pair("Written off - damaged", str(damaged))
+    pair("Written off - lost", str(lost))
+    pair("Written off - withdrawn by censorship", str(censorship))
+    pair("Total complimentary and written-off copies", str(excluded_total), bold=True)
+    pair("Copies remaining in stock", str(ctx["stock_remaining"]))
+    y -= 2 * mm
+
+    section("ROYALTY CALCULATION")
+    pair(
+        "Sales income after all discounts",
+        _fmt_money(details.get("paid_net_revenue"), ctx["currency"]),
+    )
+    pair(
+        "Author copies excluded (DARARAB)",
+        _fmt_money(details.get("author_paid_net_revenue"), ctx["currency"]),
+    )
+    pair(
+        "Written-off value",
+        _fmt_money(details.get("writeoff_value"), ctx["currency"]),
+    )
+    pair(
+        "Royalty basis",
+        _fmt_money(details.get("royalty_base"), ctx["currency"]),
+        bold=True,
+    )
+    cover = details.get("book_price")
+    pair(
+        "Cover price per copy (if applicable)",
+        _fmt_money(cover, ctx["currency"]) if cover is not None else "—",
+    )
+    percent = details.get("commission_percent")
+    pair("Royalty percentage (%)", f"{percent}%" if percent is not None else "—")
+    pair(
+        "Unrecovered advance",
+        _fmt_money(details.get("unrecovered_advance"), ctx["currency"]),
+    )
+    y -= 2 * mm
+
+    section("ROYALTIES EARNED")
+    earned = details.get("royalty_earned")
+    pair(
+        "Royalty earned",
+        _fmt_money(earned if earned is not None else ctx["amount_due"], ctx["currency"]),
+    )
+    pair(
+        "Amount due",
+        _fmt_money(ctx["amount_due"], ctx["currency"]),
+        bold=True,
+    )
+    if not ctx["eligible"] and ctx["reason"]:
+        y -= 1 * mm
         c.setFont("NotoSans", 8)
-        c.setFillColor(colors.HexColor("#555555"))
-        c.drawString(margin, y, en_label)
-        c.setFont("NotoNaskhArabic", 8)
-        c.drawRightString(width - margin, y, _ar(ar_label))
+        for line in _wrap_text(ctx["reason"], 100):
+            ensure(6 * mm)
+            c.drawString(margin, y, line)
+            y -= 4 * mm
+
+    y -= 4 * mm
+    c.setFont("NotoSans", 8)
+    for line in (
+        "Sales figures are net of returns. Complimentary and written-off copies earn no royalties.",
+        "Author copies recorded under contact person DARARAB are excluded once, at any discount.",
+        "Thank you for entrusting your work to DarArab.",
+        "Please contact us if you would like any clarification regarding this statement.",
+    ):
+        ensure(6 * mm)
+        c.drawString(margin, y, line)
         y -= 4.2 * mm
 
-        c.setFillColor(colors.black)
-        en_val, ar_val = value if isinstance(value, tuple) else (str(value), "")
-        en_val = str(en_val or "—")
-        if len(en_val) > 110:
-            en_val = en_val[:107] + "..."
-        c.setFont("NotoSans", 9)
-        c.drawString(margin + 2 * mm, y, en_val)
-        y -= 4.5 * mm
-        if ar_val:
-            c.setFont("NotoNaskhArabic", 9)
-            c.drawRightString(width - margin - 2 * mm, y, _ar(str(ar_val)))
-            y -= 5.5 * mm
-        else:
-            y -= 2 * mm
-
-    y -= 4 * mm
-    c.setStrokeColor(colors.HexColor("#333333"))
-    c.line(margin, y, width - margin, y)
-    y -= 12 * mm
-
-    # Signature blocks
-    box_w = (width - 2 * margin - 10 * mm) / 2
-    box_h = 28 * mm
-    left_x = margin
-    right_x = margin + box_w + 10 * mm
-
-    def _sig_box(x: float, title_en: str, title_ar: str) -> None:
-        c.setStrokeColor(colors.HexColor("#888888"))
-        c.setLineWidth(0.6)
-        c.rect(x, y - box_h, box_w, box_h, stroke=1, fill=0)
-        c.setFillColor(colors.black)
-        c.setFont("NotoSans-Bold", 8)
-        c.drawString(x + 3 * mm, y - 5 * mm, title_en)
-        c.setFont("NotoNaskhArabic", 8)
-        c.drawRightString(x + box_w - 3 * mm, y - 5 * mm, _ar(title_ar))
-        c.setFont("NotoSans", 7)
-        c.drawString(x + 3 * mm, y - box_h + 10 * mm, "Name / الاسم: ____________________")
-        c.drawString(x + 3 * mm, y - box_h + 5 * mm, "Signature / التوقيع: ______________")
-        c.drawString(x + 3 * mm, y - box_h + 1.5 * mm, "Date / التاريخ: ____________________")
-
-    _sig_box(left_x, "Prepared by", "أعدّه")
-    _sig_box(right_x, "Approved by", "اعتمد")
-
-    # Footer
-    c.setFont("NotoSans", 7)
-    c.setFillColor(colors.HexColor("#777777"))
-    c.drawCentredString(
-        width / 2,
-        10 * mm,
-        f"Generated {timezone.localtime().strftime('%Y-%m-%d %H:%M')} · Settlement #{ctx['id']}",
-    )
+    c.setFont("NotoSans", 8)
+    c.drawString(margin, 12 * mm, COMPANY_EMAIL)
+    c.drawRightString(width - margin, 12 * mm, "Private and confidential")
 
     c.save()
     return buf.getvalue()
